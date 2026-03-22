@@ -1,0 +1,3 @@
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\build\goat.png
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\build\ESTClock.dll
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\build\ESTClock.deps.json

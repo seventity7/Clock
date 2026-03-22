@@ -1,0 +1,15 @@
+{
+  "Name": "ESTClock Repo",
+  "Url": "https://raw.githubusercontent.com/seventity7/ESTClock/main",
+  "Plugins": [
+    {
+      "Name": "EST Clock",
+      "InternalName": "ESTClock",
+      "AssemblyVersion": "1.0.0.0",
+      "Description": "A customizable ingame real-time EST clock",
+      "Author": "Bryer",
+      "RepoUrl": "https://github.com/seventity7/ESTClock",
+      "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/latest/download/ESTClock.dll"
+    }
+  ]
+}

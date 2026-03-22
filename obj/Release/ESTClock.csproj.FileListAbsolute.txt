@@ -1,0 +1,10 @@
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\bin\Release\goat.png
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\bin\Release\ESTClock.deps.json
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\bin\Release\ESTClock.dll
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.csproj.AssemblyReference.cache
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.AssemblyInfoInputs.cache
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.AssemblyInfo.cs
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.csproj.CoreCompileInputs.cache
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.sourcelink.json
+C:\Users\Bryer\AppData\Roaming\XIVLauncher\devPlugins\ESTClock\ESTClock\obj\Release\ESTClock.dll
