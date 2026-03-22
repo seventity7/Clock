@@ -9,7 +9,7 @@
       "Description": "A customizable ingame real-time EST clock",
       "Author": "Bryer",
       "RepoUrl": "https://github.com/seventity7/ESTClock",
-      "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/latest/download/ESTClock.dll"
+      "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/tag/v0.0.1"
     }
   ]
 }
