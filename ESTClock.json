@@ -1,0 +1,17 @@
+{
+  "Author": "Bryer",
+  "Name": "EST Clock",
+  "Punchline": "Tired of missing stuff cause everything is in damn EST time but not your timezone? Say less.",
+  "Description": "Use this to know the current time in EST timezone in a customizable way.\nYou can change the text scale, colors and position of the clock.\n\nFuture updates planned:\n- More timezone options\n- Clock themes\n- Alarms\n- ...",
+  "IconUrl": "https://i.imgur.com/P1GxPjz.png",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "clock",
+    "plugin",
+    "utility",
+    "est",
+    "time",
+    "simple",
+    "customizable"
+  ]
+}

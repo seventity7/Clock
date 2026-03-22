@@ -1,0 +1,24 @@
+{
+  "Author": "Bryer",
+  "Name": "EST Clock",
+  "InternalName": "SamplePlugin",
+  "AssemblyVersion": "0.0.0.1",
+  "Description": "Use this to know the current time in EST timezone in a customizable way.\nYou can change the text scale, colors and position of the clock.\n\nFuture updates planned:\n- More timezone options\n- Clock themes\n- Alarms\n- ...",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "clock",
+    "plugin",
+    "utility",
+    "est",
+    "time",
+    "simple",
+    "customizable"
+  ],
+  "DalamudApiLevel": 14,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Tired of missing stuff cause everything is in damn EST time but not your timezone? Say less.",
+  "AcceptsFeedback": true
+}
