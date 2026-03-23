@@ -6,7 +6,7 @@
   "compilationOptions": {},
   "targets": {
     ".NETCoreApp,Version=v10.0": {
-      "ESTClock/1.0.1": {
+      "ESTClock/1.0.2": {
         "dependencies": {
           "ImGui.NET": "1.91.0.1"
         },
@@ -52,7 +52,7 @@
     }
   },
   "libraries": {
-    "ESTClock/1.0.1": {
+    "ESTClock/1.0.2": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

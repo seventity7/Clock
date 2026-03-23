@@ -2,7 +2,7 @@
   "Author": "Bryer",
   "Name": "EST Clock",
   "InternalName": "ESTClock",
-  "AssemblyVersion": "1.0.1.0",
+  "AssemblyVersion": "1.0.2.0",
   "Description": "Use this to know the current time in EST timezone in a customizable way.\nYou can change the text scale, colors and position of the clock.\n\nFuture updates planned:\n- More timezone options\n- Clock themes\n- Alarms\n- ...",
   "ApplicableVersion": "any",
   "Tags": [
