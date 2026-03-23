@@ -1,11 +1,13 @@
 {
   "version": 2,
-  "dgSpecHash": "Zb4F0pFKJ6E=",
+  "dgSpecHash": "7V/erxkEQiY=",
   "success": true,
   "projectFilePath": "C:\\Users\\Bryer\\AppData\\Roaming\\XIVLauncher\\devPlugins\\ESTClock\\ESTClock\\ESTClock.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\Bryer\\.nuget\\packages\\dalamudpackager\\14.0.2\\dalamudpackager.14.0.2.nupkg.sha512",
-    "C:\\Users\\Bryer\\.nuget\\packages\\dotnet.reproduciblebuilds\\1.2.39\\dotnet.reproduciblebuilds.1.2.39.nupkg.sha512"
+    "C:\\Users\\Bryer\\.nuget\\packages\\dalamudpackager\\2.1.12\\dalamudpackager.2.1.12.nupkg.sha512",
+    "C:\\Users\\Bryer\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.25\\microsoft.netcore.app.ref.8.0.25.nupkg.sha512",
+    "C:\\Users\\Bryer\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.25\\microsoft.windowsdesktop.app.ref.8.0.25.nupkg.sha512",
+    "C:\\Users\\Bryer\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.25\\microsoft.aspnetcore.app.ref.8.0.25.nupkg.sha512"
   ],
   "logs": []
 }
