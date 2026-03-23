@@ -1,8 +1,6 @@
 ﻿using Dalamud.Configuration;
 using System;
 using System.Numerics;
-using ESTClock;
-using ESTClock.Windows;
 
 namespace ESTClock;
 
@@ -19,6 +17,9 @@ public class Configuration : IPluginConfiguration
     public Vector4 ClockShadowColor = new Vector4(0, 0, 0, 0.8f);
     public float ClockBackgroundOpacity = 0.0f;
     public Vector4 ClockBackgroundColor = new Vector4(0, 0, 0, 1);
+
+    // ✅ ADICIONADO
+    public bool AutoStart { get; set; } = true;
 
     public void Save()
     {

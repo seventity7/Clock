@@ -1,7 +1,6 @@
 ﻿using Dalamud.Game.Command;
 using Dalamud.IoC;
 using Dalamud.Plugin;
-using System.IO;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin.Services;
 using ESTClock.Windows;
@@ -29,13 +28,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
-        this.Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        this.Configuration.Save();
-
-        var goatImagePath = Path.Combine(
-            PluginInterface.AssemblyLocation.Directory?.FullName!,
-            "goat.png"
-        );
+        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        Configuration.Save();
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
@@ -50,7 +44,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(SettingsCommand, new CommandInfo(OnSettingsCommand)
         {
-            HelpMessage = "Open EST Clock settings/customizations"
+            HelpMessage = "Open EST Clock settings"
         });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
@@ -60,7 +54,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawUI()
     {
-        // ✅ Auto-start após login (mais seguro que no construtor)
+        // ✅ AUTO START
         if (!openedOnce && ClientState.IsLoggedIn && Configuration.AutoStart)
         {
             MainWindow.IsOpen = true;
@@ -87,15 +81,8 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(SettingsCommand);
     }
 
-    private void OnCommand(string command, string args)
-    {
-        MainWindow.Toggle();
-    }
-
-    private void OnSettingsCommand(string command, string args)
-    {
-        ConfigWindow.Toggle();
-    }
+    private void OnCommand(string command, string args) => MainWindow.Toggle();
+    private void OnSettingsCommand(string command, string args) => ConfigWindow.Toggle();
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void ToggleMainUi() => MainWindow.Toggle();

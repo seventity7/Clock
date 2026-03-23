@@ -5,7 +5,8 @@
       <PackageProjectUrl>https://github.com/seventity7/ESTClock</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
-    
-    <DalamudLibPath>$(TEMP)</DalamudLibPath>
-  </PropertyGroup>
+<PropertyGroup>
+  <DalamudLibPath Condition="'$(CI)' == 'true'">$(TEMP)</DalamudLibPath>
+  <DisableDalamudReferenceValidation>true</DisableDalamudReferenceValidation>
+</PropertyGroup>
 </Project>
