@@ -9,8 +9,7 @@
     <Platforms>x64</Platforms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-
-    <DalamudLibPath Condition="'$(GITHUB_ACTIONS)' == 'true'">$(SolutionDir)references\</DalamudLibPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>

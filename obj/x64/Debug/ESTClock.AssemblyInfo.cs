@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ESTClock")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.0.1.13")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.0.1.13+02443dc4487bc67a7b3190731d6e92d6c87f5c77")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.0.1.13+ecfb9f6a6f7b0bc64d2b23d773c4bad8ba1d917d")]
 [assembly: System.Reflection.AssemblyProductAttribute("ESTClock")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ESTClock")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.0.1.13")]
