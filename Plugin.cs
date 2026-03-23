@@ -11,17 +11,13 @@ public sealed class Plugin : IDalamudPlugin
 {
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
-    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
-    [PluginService] internal static IClientState ClientState { get; private set; } = null!; // Adicionado
-
-    private const string CommandName = "/est";
-    private const string SettingsCommand = "/estsettings";
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
 
     public Configuration Configuration { get; private set; }
     public readonly WindowSystem WindowSystem = new("EST Clock");
 
-    private ConfigWindow ConfigWindow { get; init; }
-    private MainWindow MainWindow { get; init; }
+    private ConfigWindow ConfigWindow { get; set; }
+    private MainWindow MainWindow { get; set; }
 
     private bool openedOnce = false;
 
@@ -35,18 +31,19 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
 
-        CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand) { HelpMessage = "Open EST Clock" });
-        CommandManager.AddHandler(SettingsCommand, new CommandInfo(OnSettingsCommand) { HelpMessage = "EST Clock Settings" });
+        CommandManager.AddHandler("/est", new CommandInfo((_, _) => MainWindow.Toggle()) { HelpMessage = "Mostrar/Ocultar Relógio" });
+        CommandManager.AddHandler("/estsettings", new CommandInfo((_, _) => ConfigWindow.Toggle()) { HelpMessage = "Configurações" });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        PluginInterface.UiBuilder.OpenConfigUi += () => ConfigWindow.Toggle();
     }
 
     private void DrawUI()
     {
-        // Agora Configuration.AutoStart e ClientState existem!
-        if (!openedOnce && ClientState.IsLoggedIn && Configuration.AutoStart)
+        // Corrigido para evitar a warning CS0618 e prevenir crash
+        if (ClientState == null || !ClientState.IsLoggedIn) return;
+
+        if (!openedOnce && Configuration.AutoStart)
         {
             MainWindow.IsOpen = true;
             openedOnce = true;
@@ -56,19 +53,9 @@ public sealed class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
-        Configuration.Save();
         WindowSystem.RemoveAllWindows();
-        CommandManager.RemoveHandler(CommandName);
-        CommandManager.RemoveHandler(SettingsCommand);
+        CommandManager.RemoveHandler("/est");
+        CommandManager.RemoveHandler("/estsettings");
         PluginInterface.UiBuilder.Draw -= DrawUI;
-        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
-        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
     }
-
-// No Plugin.cs, altere estas funções:
-
-    private void OnCommand(string command, string args) => MainWindow.Toggle();
-    private void OnSettingsCommand(string command, string args) => ConfigWindow.Toggle();
-    public void ToggleConfigUi() => ConfigWindow.Toggle();
-    public void ToggleMainUi() => MainWindow.Toggle();
 }
