@@ -79,6 +79,19 @@ public class ConfigWindow : Window, IDisposable
             configuration.ClockShadowColor = shadowColor;
             configuration.Save();
         }
+            var autoStart = configuration.AutoStart;
+
+        if (ImGui.Checkbox("Auto-Start", ref autoStart))
+        {
+            configuration.AutoStart = autoStart;
+            configuration.Save();
+        }
+
+            ImGui.SameLine();
+            ImGui.TextColored(
+            autoStart ? new Vector4(0, 1, 0, 1) : new Vector4(1, 0, 0, 1),
+            autoStart ? "ON" : "OFF"
+        );
     }
 
     public override void PostDraw()
