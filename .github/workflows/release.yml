@@ -10,10 +10,18 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 🔥 Baixa o Dalamud manualmente (SOLUÇÃO DEFINITIVA)
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # 🔥 limpa qualquer lixo de cache / nuget quebrado
+      - name: Clear NuGet
+        run: dotnet nuget locals all --clear
+
+      # 🔥 baixa Dalamud manual
       - name: Download Dalamud
         run: |
           mkdir .dalamud
@@ -21,13 +29,13 @@ jobs:
           tar -xf dalamud.zip -C .dalamud
 
       - name: Restore
-        run: dotnet restore
+        run: dotnet restore --no-cache
 
       - name: Build
-        run: dotnet build --configuration Release
+        run: dotnet build -c Release --no-restore
 
       - name: Publish
-        run: dotnet publish -c Release -o publish
+        run: dotnet publish -c Release -o publish --no-build
 
       - name: Zip
         run: Compress-Archive -Path publish\* -DestinationPath ESTClock.zip
