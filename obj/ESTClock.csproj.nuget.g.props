@@ -12,8 +12,4 @@
   <ItemGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
     <SourceRoot Include="C:\Users\Bryer\.nuget\packages\" />
   </ItemGroup>
-  <ImportGroup Condition=" '$(ExcludeRestorePackageImports)' != 'true' ">
-    <Import Project="$(NuGetPackageRoot)dotnet.reproduciblebuilds\1.2.39\buildTransitive\DotNet.ReproducibleBuilds.props" Condition="Exists('$(NuGetPackageRoot)dotnet.reproduciblebuilds\1.2.39\buildTransitive\DotNet.ReproducibleBuilds.props')" />
-    <Import Project="$(NuGetPackageRoot)dalamudpackager\14.0.2\build\DalamudPackager.props" Condition="Exists('$(NuGetPackageRoot)dalamudpackager\14.0.2\build\DalamudPackager.props')" />
-  </ImportGroup>
 </Project>

@@ -1,55 +1,39 @@
-name: Build and Release Plugin
+name: Build & Release
 
 on:
   push:
     tags:
-      - "v*.*.*"
+      - 'v*'
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 7.0.x
+      # 🔥 Baixa o Dalamud manualmente (SOLUÇÃO DEFINITIVA)
+      - name: Download Dalamud
+        run: |
+          mkdir .dalamud
+          curl -L https://goatcorp.github.io/dalamud-distrib/latest.zip -o dalamud.zip
+          tar -xf dalamud.zip -C .dalamud
 
       - name: Restore
         run: dotnet restore
 
       - name: Build
         run: dotnet build --configuration Release
-        env:
-          CI: true
 
-      - name: Find DLL
-        id: find_dll
-        shell: powershell
-        run: |
-          $dll = Get-ChildItem -Recurse -Filter ESTClock.dll | Where-Object { $_.FullName -like "*Release*" } | Select-Object -First 1
-          echo "dll_path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
+      - name: Publish
+        run: dotnet publish -c Release -o publish
 
-      - name: Prepare folder
-        run: |
-          mkdir release
-          mkdir release/ESTClock
+      - name: Zip
+        run: Compress-Archive -Path publish\* -DestinationPath ESTClock.zip
 
-      - name: Copy files
-        shell: powershell
-        run: |
-          Copy-Item "${{ steps.find_dll.outputs.dll_path }}" "release/ESTClock/ESTClock.dll"
-          Copy-Item "ESTClock.json" "release/ESTClock/ESTClock.json"
-
-      - name: Create ZIP
-        run: |
-          powershell Compress-Archive -Path release/ESTClock -DestinationPath ESTClock.zip
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Release
+        uses: softprops/action-gh-release@v1
         with:
           files: ESTClock.zip
         env:

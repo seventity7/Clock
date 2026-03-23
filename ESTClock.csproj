@@ -1,15 +1,24 @@
-<Project Sdk="Dalamud.NET.Sdk/14.0.2">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
-  <!-- Fix CI -->
+  <!-- Caminho do Dalamud baixado no CI -->
   <PropertyGroup>
-    <DalamudLibPath Condition="'$(CI)' == 'true'">$(TEMP)</DalamudLibPath>
-    <DisableDalamudReferenceValidation>true</DisableDalamudReferenceValidation>
+    <DalamudLibPath>$(MSBuildThisFileDirectory).dalamud</DalamudLibPath>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Dalamud">
+      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
+    </Reference>
+    <Reference Include="ImGuiNET">
+      <HintPath>$(DalamudLibPath)\ImGuiNET.dll</HintPath>
+    </Reference>
+  </ItemGroup>
 
 </Project>
