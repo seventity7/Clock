@@ -10,14 +10,14 @@
     "ApplicableVersion": "any",
     "DalamudApiLevel": 14,
     "TestingDalamudApiLevel": 14,
-    "IsHide": "False",
-    "IsTestingExclusive": "False",
+    "IsHide": false,
+    "IsTestingExclusive": false,
     "DownloadCount": 0,
     "LastUpdate": 0,
     "LoadPriority": 69420,
     "LoadRequiredState": 2,
     "LoadSync": true,
-    "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/download/v0.0.1/ESTClock.dll",
+    "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/download/v0.0.10/ESTClock.zip",
     "IconUrl": "https://raw.githubusercontent.com/seventity7/ESTClock/main/estclockicon.png"
   }
 ]
