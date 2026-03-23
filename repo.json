@@ -17,7 +17,7 @@
     "LoadPriority": 69420,
     "LoadRequiredState": 2,
     "LoadSync": true,
-    "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/download/v0.0.100/ESTClock.zip",
+    "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/latest/download/ESTClock.zip",
     "IconUrl": "https://raw.githubusercontent.com/seventity7/ESTClock/main/estclockicon.png"
   }
 ]
