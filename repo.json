@@ -1,18 +1,23 @@
-{
-  "Name": "ESTClock Repo",
-  "Url": "https://raw.githubusercontent.com/seventity7/ESTClock/main/",
-  "Plugins": [
-    {
-      "Name": "EST Clock",
-      "InternalName": "ESTClock",
-      "AssemblyVersion": "0.0.1",
-      "Author": "Bryer",
-      "Description": "A customizable ingame real-time EST clock",
-      "Punchline": "Real-time EST clock for your HUD",
-      "RepoUrl": "https://github.com/seventity7/ESTClock",
-      "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/download/v0.0.1/ESTClock.dll",
-      "IsHide": false,
-      "Changelog": "Plugin released."
-    }
-  ]
-}
+[
+  {
+    "Author": "Bryer",
+    "Name": "EST Clock",
+    "Punchline": "Real-time EST clock for your HUD",
+    "Description": "A customizable ingame real-time EST clock",
+    "InternalName": "ESTClock",
+    "AssemblyVersion": "0.0.1",
+    "RepoUrl": "https://github.com/seventity7/ESTClock",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 14,
+    "TestingDalamudApiLevel": 14,
+    "IsHide": "False",
+    "IsTestingExclusive": "False",
+    "DownloadCount": 0,
+    "LastUpdate": 0,
+    "LoadPriority": 69420,
+    "LoadRequiredState": 2,
+    "LoadSync": true,
+    "DownloadLinkInstall": "https://github.com/seventity7/ESTClock/releases/download/v0.0.1/ESTClock.dll",
+    "IconUrl": "https://raw.githubusercontent.com/seventity7/ESTClock/main/estclockicon.png"
+  }
+]
