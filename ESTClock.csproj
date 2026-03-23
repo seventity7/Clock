@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
-  <!-- ✅ FIX PARA CI -->
+  <!-- Fix CI -->
   <PropertyGroup>
     <DalamudLibPath Condition="'$(CI)' == 'true'">$(TEMP)</DalamudLibPath>
     <DisableDalamudReferenceValidation>true</DisableDalamudReferenceValidation>
