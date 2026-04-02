@@ -5,7 +5,7 @@
     "Punchline": "Real-time EST clock for your HUD",
     "Description": "A customizable ingame real-time EST clock",
     "InternalName": "ESTClock",
-    "AssemblyVersion": "1.0.3",
+    "AssemblyVersion": "1.0.4",
     "RepoUrl": "https://github.com/seventity7/ESTClock",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 14,
