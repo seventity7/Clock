@@ -19,6 +19,7 @@ public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/est";
     private const string SettingsCommand = "/estsettings";
+    private const string AlarmsCommand = "/estalarms";
 
     private readonly IDalamudPluginInterface pluginInterface;
     private readonly ICommandManager commandManager;
@@ -73,7 +74,7 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage =
-                "EST Clock commands: /est, /est help, /est timezone est|pst|utc, /est format 12|24, " +
+                "EST Clock commands: /est, /est help, /est timezone est|pst|utc|bst|jst|mst|acst, /est format 12|24, " +
                 "/est colon default|always|hidden|slow|fast, /est layout horizontal|vertical, " +
                 "/est preset classic|minimal|gold|retro, /est lock, /est unlock, " +
                 "/est profile next|list|set <n>|add <name>|rename <name>|delete"
@@ -82,6 +83,11 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(SettingsCommand, new CommandInfo(OnSettingsCommand)
         {
             HelpMessage = "Open EST Clock settings/customizations"
+        });
+
+        commandManager.AddHandler(AlarmsCommand, new CommandInfo(OnAlarmsCommand)
+        {
+            HelpMessage = "Open EST Clock settings directly on the Alarms tab"
         });
 
         pluginInterface.UiBuilder.DisableCutsceneUiHide = !Configuration.HideDuringCutscenes;
@@ -109,6 +115,7 @@ public sealed class Plugin : IDalamudPlugin
 
         commandManager.RemoveHandler(CommandName);
         commandManager.RemoveHandler(SettingsCommand);
+        commandManager.RemoveHandler(AlarmsCommand);
     }
 
     private void DrawUI()
@@ -279,8 +286,8 @@ public sealed class Plugin : IDalamudPlugin
             return false;
 
         bool hasTimeWindow =
-            Regex.IsMatch(text, @"from\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+to\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+\((?:PDT|PST|UTC|GMT|EST)\)", RegexOptions.IgnoreCase) ||
-            Regex.IsMatch(text, @"from\s+.+?\s+to\s+.+?\((?:PDT|PST|UTC|GMT|EST)\)", RegexOptions.IgnoreCase);
+            Regex.IsMatch(text, @"from\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+to\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+\((?:PDT|PST|UTC|GMT|EST|BST|JST|MST|ACST)\)", RegexOptions.IgnoreCase) ||
+            Regex.IsMatch(text, @"from\s+.+?\s+to\s+.+?\((?:PDT|PST|UTC|GMT|EST|BST|JST|MST|ACST)\)", RegexOptions.IgnoreCase);
 
         if (!hasTimeWindow)
             return false;
@@ -459,11 +466,16 @@ public sealed class Plugin : IDalamudPlugin
         ToggleConfigUi();
     }
 
+    private void OnAlarmsCommand(string command, string args)
+    {
+        OpenConfigUiAtAlarms();
+    }
+
     private void HandleTimezoneCommand(string rest)
     {
         if (!TryParseTimeZone(rest, out var zone))
         {
-            chatGui.PrintError("Invalid timezone. Use est, pst or utc.", "EST Clock");
+            chatGui.PrintError("Invalid timezone. Use est, pst, utc, bst, jst, mst or acst.", "EST Clock");
             return;
         }
 
@@ -503,16 +515,30 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (Configuration.TimeFormat == ClockTimeFormat.TwelveHour)
         {
-            if (Configuration.AlarmEditorHour <= 0 || Configuration.AlarmEditorHour > 12)
+            int sourceHour24;
+
+            if (Configuration.AlarmEditorHour >= 0 && Configuration.AlarmEditorHour <= 23)
+            {
+                sourceHour24 = Configuration.AlarmEditorHour;
+            }
+            else
             {
                 var nowInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, Configuration.SelectedTimeZone);
-                var hour12 = nowInZone.Hour % 12;
-                Configuration.AlarmEditorHour = hour12 == 0 ? 12 : hour12;
+                sourceHour24 = nowInZone.Hour;
             }
+
+            Configuration.AlarmEditorIsPm = sourceHour24 >= 12;
+            var hour12 = sourceHour24 % 12;
+            Configuration.AlarmEditorHour = hour12 == 0 ? 12 : hour12;
         }
         else
         {
-            Configuration.AlarmEditorHour = Math.Clamp(Configuration.AlarmEditorHour, 0, 23);
+            var selectedHour12 = Math.Clamp(Configuration.AlarmEditorHour, 1, 12);
+            var hour24 = selectedHour12 % 12;
+            if (Configuration.AlarmEditorIsPm)
+                hour24 += 12;
+
+            Configuration.AlarmEditorHour = Math.Clamp(hour24, 0, 23);
         }
 
         Configuration.Save();
@@ -691,6 +717,30 @@ public sealed class Plugin : IDalamudPlugin
                 zone = ClockTimeZone.Universal;
                 return true;
 
+            case "bst":
+            case "british":
+            case "britishsummer":
+            case "british summer":
+                zone = ClockTimeZone.BST;
+                return true;
+
+            case "jst":
+            case "japan":
+            case "tokyo":
+                zone = ClockTimeZone.JST;
+                return true;
+
+            case "mst":
+            case "mountain":
+                zone = ClockTimeZone.MST;
+                return true;
+
+            case "acst":
+            case "australiacentral":
+            case "australia central":
+                zone = ClockTimeZone.ACST;
+                return true;
+
             default:
                 return false;
         }
@@ -700,7 +750,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         chatGui.Print("/est - toggle clock", "EST Clock");
         chatGui.Print("/est settings - open settings", "EST Clock");
-        chatGui.Print("/est timezone est|pst|utc", "EST Clock");
+        chatGui.Print("/estalarms - open settings on the alarms tab", "EST Clock");
+        chatGui.Print("/est timezone est|pst|utc|bst|jst|mst|acst", "EST Clock");
         chatGui.Print("/est format 12|24", "EST Clock");
         chatGui.Print("/est colon default|always|hidden|slow|fast", "EST Clock");
         chatGui.Print("/est layout horizontal|vertical", "EST Clock");
@@ -747,6 +798,11 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
+
+    public void OpenConfigUiAtAlarms()
+    {
+        ConfigWindow.OpenToAlarmsTab();
+    }
 
     public void ToggleMainUi()
     {
