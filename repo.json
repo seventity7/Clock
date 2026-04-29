@@ -5,7 +5,7 @@
     "Punchline": "Real-time Clock for your HUD",
     "Description": "A customizable ingame real-time Clock",
     "InternalName": "Clock",
-    "AssemblyVersion": "1.0.6",
+    "AssemblyVersion": "1.0.6.1",
     "RepoUrl": "https://github.com/seventity7/clock",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
