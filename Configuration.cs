@@ -2,8 +2,6 @@ using Dalamud.Configuration;
 using Dalamud.Plugin;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
 using System.Numerics;
 
 namespace Clock;
@@ -161,59 +159,9 @@ public sealed class ClockProfile
 }
 
 [Serializable]
-public sealed class AlarmEntry
+public partial class Configuration : IPluginConfiguration
 {
-    public Guid Id = Guid.NewGuid();
-    public string DateTimeText = "";
-    public string Message = "";
-    public ClockTimeZone TimeZone = ClockTimeZone.EST;
-    public bool Enabled = true;
-    public bool HasTriggered = false;
-
-    public string BuildListLine(ClockTimeFormat displayFormat)
-    {
-        if (!TimeZoneHelper.TryParseInZone(DateTimeText, TimeZone, out var utc))
-            return $"Invalid alarm - {TimeZone.ToShortText()}";
-
-        var local = TimeZoneHelper.ConvertFromUtc(utc, TimeZone);
-        var dateText = local.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
-        var suffix = local.ToString("tt", CultureInfo.InvariantCulture)
-            .ToLowerInvariant()
-            .Replace("am", "a.m.")
-            .Replace("pm", "p.m.");
-
-        string timeText = displayFormat == ClockTimeFormat.TwentyFourHour
-            ? $"{local:HH:mm} {suffix}"
-            : $"{local:hh:mm} {suffix}";
-
-        var messageText = string.IsNullOrWhiteSpace(Message) ? "Alarm" : Message.Trim();
-        return $"{dateText} - {TimeZone.ToShortText()} - {timeText} | {messageText}";
-    }
-
-    public string BuildTriggerMessage(ClockTimeFormat displayFormat)
-    {
-        if (!TimeZoneHelper.TryParseInZone(DateTimeText, TimeZone, out var utc))
-            return "✓ (ERR) --:-- → Invalid alarm";
-
-        var local = TimeZoneHelper.ConvertFromUtc(utc, TimeZone);
-        var suffix = local.ToString("tt", CultureInfo.InvariantCulture)
-            .ToLowerInvariant()
-            .Replace("am", "a.m.")
-            .Replace("pm", "p.m.");
-
-        string timeText = displayFormat == ClockTimeFormat.TwentyFourHour
-            ? $"{local:HH:mm} {suffix}"
-            : $"{local:hh:mm} {suffix}";
-
-        var custom = string.IsNullOrWhiteSpace(Message) ? "Alarm" : Message.Trim();
-        return $"✓ ({TimeZone.ToShortText()}) {timeText} → {custom}";
-    }
-}
-
-[Serializable]
-public class Configuration : IPluginConfiguration
-{
-    public int Version { get; set; } = 15;
+    public int Version { get; set; } = 17;
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -222,44 +170,19 @@ public class Configuration : IPluginConfiguration
     public bool AutoStart = false;
     public bool HideDuringCutscenes = false;
 
+    // Legacy enum kept only so existing saved configs can migrate to SelectedTimeZoneId
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
+    public string SelectedTimeZoneId = "";
+    public List<string> FavoriteTimeZoneIds = new();
     public ClockTimeFormat TimeFormat = ClockTimeFormat.TwelveHour;
     public ColonAnimationMode ColonAnimation = ColonAnimationMode.Blink;
 
     public List<ClockProfile> Profiles = new();
     public int ActiveProfileIndex = 0;
 
-    public int AlarmEditorDay = 1;
-    public int AlarmEditorHour = 1;
-    public int AlarmEditorMinute = 0;
-    public bool AlarmEditorIsPm = false;
-    public string AlarmEditorMessage = "";
-    public string AlarmEditorLastLocalDateText = "";
-    public int AlarmSoundId = 8;
-
-    public List<AlarmEntry> Alarms = new();
-
-    public bool MaintenanceReminderEnabled = false;
-    public bool MaintenanceRemind24Hours = true;
-    public bool MaintenanceRemind1Hour = true;
-    public bool MaintenanceRemind15Minutes = true;
-    public string LastDetectedMaintenanceMessage = "";
-    public string DetectedMaintenanceDateTimeText = "";
-    public bool HasDetectedMaintenanceTime = false;
-    public DateTime LastMaintenanceDetectionTimestampUtc = DateTime.MinValue;
 
     public ClockPreset PreviewPresetSelection = ClockPreset.Classic;
 
-    // legacy fields
-    public bool CustomAlarmEnabled = false;
-    public bool CustomAlarmKeepAfterTrigger = false;
-    public bool CustomAlarmSoundEnabled = true;
-    public int CustomAlarmSoundEffect = 1;
-    public string CustomAlarmDateTimeText = "";
-    public string CustomAlarmMessage = "Custom reminder";
-    public int CustomAlarmDay = 1;
-    public int CustomAlarmHour = 1;
-    public int CustomAlarmMinute = 0;
 
     public bool ClockTransparent = true;
     public float ClockTextScale = 2.0f;
@@ -286,7 +209,7 @@ public class Configuration : IPluginConfiguration
     public void EnsureInitialized()
     {
         bool needsLocalTimeMigration = Version < 14;
-        SanitizeTimeZone();
+        MigrateTimeZones();
 
         if (Profiles == null)
             Profiles = new List<ClockProfile>();
@@ -316,10 +239,10 @@ public class Configuration : IPluginConfiguration
             });
         }
 
-        if (Alarms == null)
-            Alarms = new List<AlarmEntry>();
+        if (FavoriteTimeZoneIds == null)
+            FavoriteTimeZoneIds = new List<string>();
 
-        AlarmSoundId = Math.Clamp(AlarmSoundId, 1, 16);
+        EnsureConfigurationFeatureState();
 
         ActiveProfileIndex = Math.Clamp(ActiveProfileIndex, 0, Profiles.Count - 1);
 
@@ -335,76 +258,33 @@ public class Configuration : IPluginConfiguration
                 EnsureLocalTimeDefaults(profile);
         }
 
-        Version = 15;
-
-        if (!string.IsNullOrWhiteSpace(CustomAlarmDateTimeText))
-        {
-            bool alreadyMigrated = Alarms.Exists(a =>
-                a.DateTimeText == CustomAlarmDateTimeText &&
-                a.Message == (CustomAlarmMessage ?? ""));
-
-            if (!alreadyMigrated)
-            {
-                Alarms.Add(new AlarmEntry
-                {
-                    DateTimeText = CustomAlarmDateTimeText,
-                    Message = string.IsNullOrWhiteSpace(CustomAlarmMessage) ? "Alarm" : CustomAlarmMessage,
-                    TimeZone = SelectedTimeZone,
-                    Enabled = CustomAlarmEnabled,
-                    HasTriggered = false
-                });
-            }
-
-            CustomAlarmDateTimeText = "";
-        }
-
-        RefreshAlarmEditorDateForLocalDay(SelectedTimeZone);
-
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, SelectedTimeZone);
-        AlarmEditorDay = Math.Clamp(
-            AlarmEditorDay <= 0 ? zoneNow.Day : AlarmEditorDay,
-            1,
-            DateTime.DaysInMonth(zoneNow.Year, zoneNow.Month));
-
-        if (TimeFormat == ClockTimeFormat.TwelveHour)
-        {
-            if (AlarmEditorHour <= 0 || AlarmEditorHour > 12)
-            {
-                AlarmEditorIsPm = zoneNow.Hour >= 12;
-                var hour12 = zoneNow.Hour % 12;
-                AlarmEditorHour = hour12 == 0 ? 12 : hour12;
-            }
-        }
-        else
-        {
-            AlarmEditorHour = Math.Clamp(AlarmEditorHour, 0, 23);
-        }
-
-        AlarmEditorMinute = Math.Clamp(AlarmEditorMinute, 0, 59);
+        Version = 17;
     }
 
-    private void SanitizeTimeZone()
+    private void MigrateTimeZones()
     {
-        var rawValue = (int)SelectedTimeZone;
+        if (string.IsNullOrWhiteSpace(SelectedTimeZoneId))
+            SelectedTimeZoneId = TimeZoneHelper.ToTimeZoneId(SelectedTimeZone);
 
-        // Compatibilidade com versões antigas:
-        // 0 = EST
-        // 1 = PST/Pacific
-        // 2 = UTC/Universal
-        // 3/4 eram valores antigos usados em builds anteriores para UTC/GMT
-        SelectedTimeZone = rawValue switch
+        SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(SelectedTimeZoneId);
+
+    }
+
+
+    private void NormalizeFavoriteTimeZones()
+    {
+        var normalized = new List<string>();
+
+        foreach (var timeZoneId in FavoriteTimeZoneIds)
         {
-            0 => ClockTimeZone.EST,
-            1 => ClockTimeZone.Pacific,
-            2 => ClockTimeZone.Universal,
-            3 => ClockTimeZone.Universal,
-            4 => ClockTimeZone.Universal,
-            5 => ClockTimeZone.BST,
-            6 => ClockTimeZone.JST,
-            7 => ClockTimeZone.MST,
-            8 => ClockTimeZone.ACST,
-            _ => ClockTimeZone.EST
-        };
+            var normalizedId = TimeZoneHelper.NormalizeTimeZoneId(timeZoneId);
+            if (normalized.Exists(id => string.Equals(id, normalizedId, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            normalized.Add(normalizedId);
+        }
+
+        FavoriteTimeZoneIds = normalized;
     }
 
     private void EnsureLocalTimeDefaults(ClockProfile profile)
@@ -482,7 +362,7 @@ public class Configuration : IPluginConfiguration
     public void ApplyPresetToActiveProfile(ClockPreset preset)
     {
         var profile = GetActiveProfile();
-        var replacement = CreatePresetProfile(profile.Name, preset);
+        var replacement = ClockProfileFactory.CreatePresetProfile(profile.Name, preset);
 
         profile.ShowBorder = replacement.ShowBorder;
         profile.ShowIcon = replacement.ShowIcon;
@@ -503,110 +383,13 @@ public class Configuration : IPluginConfiguration
         profile.LayoutMode = replacement.LayoutMode;
     }
 
-    public void RefreshAlarmEditorDateForLocalDay(ClockTimeZone editorTimeZone)
+    public void CopyPublicStateFrom(Configuration source)
     {
-        var localDateText = DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        if (string.Equals(AlarmEditorLastLocalDateText, localDateText, StringComparison.Ordinal))
-            return;
+        Version = source.Version;
 
-        AlarmEditorLastLocalDateText = localDateText;
-
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZone);
-        AlarmEditorDay = Math.Clamp(
-            zoneNow.Day,
-            1,
-            DateTime.DaysInMonth(zoneNow.Year, zoneNow.Month));
-    }
-
-    public void AddAlarmFromEditor(ClockTimeZone alarmTimeZone)
-    {
-        var dateTimeText = BuildAlarmEditorDateTimeText(alarmTimeZone);
-        if (string.IsNullOrWhiteSpace(dateTimeText))
-            return;
-
-        Alarms.Add(new AlarmEntry
-        {
-            DateTimeText = dateTimeText,
-            Message = string.IsNullOrWhiteSpace(AlarmEditorMessage) ? "Alarm" : AlarmEditorMessage.Trim(),
-            TimeZone = alarmTimeZone,
-            Enabled = true,
-            HasTriggered = false
-        });
-    }
-
-    public bool UpdateAlarmFromEditor(Guid alarmId, ClockTimeZone alarmTimeZone)
-    {
-        var alarm = Alarms.FirstOrDefault(a => a.Id == alarmId);
-        if (alarm == null)
-            return false;
-
-        var dateTimeText = BuildAlarmEditorDateTimeText(alarmTimeZone);
-        if (string.IsNullOrWhiteSpace(dateTimeText))
-            return false;
-
-        alarm.DateTimeText = dateTimeText;
-        alarm.Message = string.IsNullOrWhiteSpace(AlarmEditorMessage) ? "Alarm" : AlarmEditorMessage.Trim();
-        alarm.TimeZone = alarmTimeZone;
-        alarm.Enabled = true;
-        alarm.HasTriggered = false;
-        return true;
-    }
-
-    public bool ReenableAlarmForToday(Guid alarmId)
-    {
-        var alarm = Alarms.FirstOrDefault(a => a.Id == alarmId);
-        if (alarm == null)
-            return false;
-
-        if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.TimeZone, out var alarmUtc))
-            return false;
-
-        var alarmLocal = TimeZoneHelper.ConvertFromUtc(alarmUtc, alarm.TimeZone);
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, alarm.TimeZone);
-        var todayAlarm = new DateTime(zoneNow.Year, zoneNow.Month, zoneNow.Day, alarmLocal.Hour, alarmLocal.Minute, 0);
-
-        alarm.DateTimeText = todayAlarm.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-        alarm.Enabled = true;
-        alarm.HasTriggered = false;
-        return true;
-    }
-
-    public string BuildAlarmEditorDateTimeText(ClockTimeZone editorTimeZone)
-    {
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZone);
-        var year = zoneNow.Year;
-        var month = zoneNow.Month;
-        var maxDay = DateTime.DaysInMonth(year, month);
-
-        AlarmEditorDay = Math.Clamp(AlarmEditorDay, 1, maxDay);
-        AlarmEditorMinute = Math.Clamp(AlarmEditorMinute, 0, 59);
-
-        int hour24;
-
-        if (TimeFormat == ClockTimeFormat.TwelveHour)
-        {
-            var selectedHour12 = Math.Clamp(AlarmEditorHour, 1, 12);
-            hour24 = selectedHour12 % 12;
-            if (AlarmEditorIsPm)
-                hour24 += 12;
-        }
-        else
-        {
-            hour24 = Math.Clamp(AlarmEditorHour, 0, 23);
-        }
-
-        var dt = new DateTime(year, month, AlarmEditorDay, hour24, AlarmEditorMinute, 0);
-        return dt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-    }
-
-    public string BuildAlarmEditorDateTimeText()
-    {
-        return BuildAlarmEditorDateTimeText(SelectedTimeZone);
-    }
-
-    public void RemoveAlarm(Guid alarmId)
-    {
-        Alarms.RemoveAll(a => a.Id == alarmId);
+        var fields = typeof(Configuration).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
+        foreach (var field in fields)
+            field.SetValue(this, field.GetValue(source));
     }
 
     public void Save()
@@ -614,165 +397,5 @@ public class Configuration : IPluginConfiguration
         pluginInterface?.SavePluginConfig(this);
     }
 
-    private static ClockProfile CreatePresetProfile(string name, ClockPreset preset)
-    {
-        return preset switch
-        {
-            ClockPreset.Minimal => new ClockProfile
-            {
-                Name = name,
-                ShowBorder = false,
-                ShowIcon = false,
-                ShowShadowText = false,
-                ShowIconBorder = false,
-                ClockTextScale = 2.0f,
-                ClockTextColor = new Vector4(1f, 1f, 1f, 1f),
-                ClockShadowColor = new Vector4(0f, 0f, 0f, 0f),
-                IconTextColor = new Vector4(1f, 1f, 1f, 1f),
-                IconBackgroundColor = new Vector4(0f, 0f, 0f, 0f),
-                IconBorderColor = new Vector4(0f, 0f, 0f, 0f),
-                IconBorderOpacity = 0f,
-                ClockBackgroundOpacity = 0.15f,
-                ClockBackgroundColor = new Vector4(0.05f, 0.05f, 0.05f, 1f),
-                BorderColor = new Vector4(0f, 0f, 0f, 0f),
-                BorderOpacity = 0f,
-                DisplayStyle = ClockDisplayStyle.Minimal,
-                LayoutMode = ClockLayoutMode.Horizontal
-            },
 
-            ClockPreset.GoldHud => new ClockProfile
-            {
-                Name = name,
-                ShowBorder = true,
-                ShowIcon = true,
-                ShowShadowText = true,
-                ShowIconBorder = true,
-                ClockTextScale = 2.15f,
-                ClockTextColor = new Vector4(1.00f, 0.88f, 0.52f, 1f),
-                ClockShadowColor = new Vector4(0.12f, 0.06f, 0.01f, 0.95f),
-                IconTextColor = new Vector4(0.17f, 0.09f, 0.02f, 1f),
-                IconBackgroundColor = new Vector4(0.96f, 0.83f, 0.46f, 0.97f),
-                IconBorderColor = new Vector4(1.00f, 0.93f, 0.70f, 1f),
-                IconBorderOpacity = 1f,
-                ClockBackgroundOpacity = 0.87f,
-                ClockBackgroundColor = new Vector4(0.19f, 0.11f, 0.04f, 1f),
-                BorderColor = new Vector4(0.92f, 0.72f, 0.33f, 1f),
-                BorderOpacity = 1f,
-                DisplayStyle = ClockDisplayStyle.StrongShadow,
-                LayoutMode = ClockLayoutMode.Horizontal
-            },
-
-            ClockPreset.RetroPanel => new ClockProfile
-            {
-                Name = name,
-                ShowBorder = true,
-                ShowIcon = true,
-                ShowShadowText = true,
-                ShowIconBorder = true,
-                ClockTextScale = 2.0f,
-                ClockTextColor = new Vector4(0.78f, 1.00f, 0.76f, 1f),
-                ClockShadowColor = new Vector4(0.04f, 0.11f, 0.04f, 1f),
-                IconTextColor = new Vector4(0.05f, 0.15f, 0.05f, 1f),
-                IconBackgroundColor = new Vector4(0.54f, 0.84f, 0.56f, 0.95f),
-                IconBorderColor = new Vector4(0.72f, 1.00f, 0.72f, 1f),
-                IconBorderOpacity = 1f,
-                ClockBackgroundOpacity = 0.92f,
-                ClockBackgroundColor = new Vector4(0.07f, 0.17f, 0.08f, 1f),
-                BorderColor = new Vector4(0.58f, 0.94f, 0.58f, 1f),
-                BorderOpacity = 1f,
-                DisplayStyle = ClockDisplayStyle.RetroPanel,
-                LayoutMode = ClockLayoutMode.Horizontal
-            },
-
-            _ => new ClockProfile
-            {
-                Name = name,
-                ShowBorder = true,
-                ShowIcon = true,
-                ShowShadowText = true,
-                ShowIconBorder = true,
-                ClockTextScale = 2.0f,
-                ClockTextColor = new Vector4(1f, 1f, 1f, 1f),
-                ClockShadowColor = new Vector4(0f, 0f, 0f, 0.8f),
-                IconTextColor = new Vector4(0f, 0f, 0f, 1f),
-                IconBackgroundColor = new Vector4(0.90f, 0.86f, 0.80f, 0.96f),
-                IconBorderColor = new Vector4(0.98f, 0.96f, 0.92f, 1.0f),
-                IconBorderOpacity = 1.0f,
-                ClockBackgroundOpacity = 0.82f,
-                ClockBackgroundColor = new Vector4(0.29f, 0.17f, 0.12f, 1.0f),
-                BorderColor = new Vector4(0.47f, 0.31f, 0.22f, 0.95f),
-                BorderOpacity = 0.95f,
-                DisplayStyle = ClockDisplayStyle.Classic,
-                LayoutMode = ClockLayoutMode.Horizontal
-            }
-        };
-    }
-}
-
-public static class TimeZoneHelper
-{
-    public static TimeZoneInfo GetTimeZone(ClockTimeZone zone)
-    {
-        return zone switch
-        {
-            ClockTimeZone.Pacific => TimeZoneInfo.CreateCustomTimeZone("PST", TimeSpan.FromHours(-7), "PST", "PST"),
-            ClockTimeZone.Universal => TimeZoneInfo.Utc,
-            ClockTimeZone.BST => TimeZoneInfo.CreateCustomTimeZone("BST", TimeSpan.FromHours(1), "BST", "BST"),
-            ClockTimeZone.JST => TimeZoneInfo.CreateCustomTimeZone("JST", TimeSpan.FromHours(9), "JST", "JST"),
-            ClockTimeZone.MST => GetMountainTimeZone(),
-            ClockTimeZone.ACST => TimeZoneInfo.CreateCustomTimeZone("ACST", TimeSpan.FromHours(9.5), "ACST", "ACST"),
-            _ => GetEasternTimeZone()
-        };
-    }
-
-    public static string ToShortText(this ClockTimeZone zone)
-    {
-        return zone switch
-        {
-            ClockTimeZone.Pacific => "PST",
-            ClockTimeZone.Universal => "UTC",
-            ClockTimeZone.BST => "BST",
-            ClockTimeZone.JST => "JST",
-            ClockTimeZone.MST => "MST",
-            ClockTimeZone.ACST => "ACST",
-            _ => "EST"
-        };
-    }
-
-    public static DateTime ConvertFromUtc(DateTime utc, ClockTimeZone zone)
-    {
-        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), GetTimeZone(zone));
-    }
-
-    public static bool TryParseInZone(string input, ClockTimeZone zone, out DateTime utcTime)
-    {
-        utcTime = DateTime.MinValue;
-
-        if (!DateTime.TryParseExact(
-                input.Trim(),
-                "yyyy-MM-dd HH:mm",
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.None,
-                out var parsed))
-        {
-            return false;
-        }
-
-        var tz = GetTimeZone(zone);
-        var unspecified = DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified);
-        utcTime = TimeZoneInfo.ConvertTimeToUtc(unspecified, tz);
-        return true;
-    }
-
-    private static TimeZoneInfo GetEasternTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
-        catch { return TimeZoneInfo.FindSystemTimeZoneById("America/New_York"); }
-    }
-
-    private static TimeZoneInfo GetMountainTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Mountain Standard Time"); }
-        catch { return TimeZoneInfo.FindSystemTimeZoneById("America/Denver"); }
-    }
 }

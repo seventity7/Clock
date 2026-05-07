@@ -1,4 +1,5 @@
-﻿using System;
+﻿// may07 - cleaning UI
+using System;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -109,7 +110,7 @@ public class MainWindow : Window, IDisposable
         var badgeScale = MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
 
         var parts = GetClockParts();
-        var badgeText = plugin.Configuration.SelectedTimeZone.ToShortText();
+        var badgeText = TimeZoneHelper.ToShortText(plugin.Configuration.SelectedTimeZoneId);
         var badgeTextSize = profile.ShowIcon
             ? CalculateScaledTextSize(badgeText, badgeScale)
             : Vector2.Zero;
@@ -962,8 +963,8 @@ public class MainWindow : Window, IDisposable
 
     private ClockParts GetClockParts()
     {
-        var zone = plugin.Configuration.SelectedTimeZone;
-        var dateInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, zone);
+        var zoneId = plugin.Configuration.SelectedTimeZoneId;
+        var dateInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, zoneId);
 
         var minutes = dateInZone.ToString("mm");
         var suffix = dateInZone.ToString("tt").ToLower().Replace("am", "a.m.").Replace("pm", "p.m.");
@@ -986,7 +987,7 @@ public class MainWindow : Window, IDisposable
         var badgeScale = MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
 
         var parts = GetClockParts();
-        var badgeText = plugin.Configuration.SelectedTimeZone.ToShortText();
+        var badgeText = TimeZoneHelper.ToShortText(plugin.Configuration.SelectedTimeZoneId);
         var badgeSize = profile.ShowIcon
             ? CalculateScaledTextSize(badgeText, badgeScale)
             : Vector2.Zero;

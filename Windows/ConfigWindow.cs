@@ -1,9 +1,11 @@
+// may07 - cleaning UI
 using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
 
 namespace Clock.Windows;
@@ -32,9 +34,17 @@ public class ConfigWindow : Window, IDisposable
     private string newProfileName = "";
     private ConfigTabRequest requestedTab = ConfigTabRequest.None;
     private Guid? editingAlarmId;
-    private ClockTimeZone? editingAlarmTimeZone;
+    private string? editingAlarmTimeZoneId;
+    private readonly FileDialogManager fileDialogManager = new();
+    private static readonly Vector4 GoldTextColor = new(1f, 0.82f, 0.42f, 1f);
+    private string timeZoneFilter = "";
+    private string countryTimeZoneFilter = "";
+    private CountryTimeZoneOption? selectedCountryTimeZone;
+    private bool favoriteTimezonesExpanded = true;
     private Vector2 reenabledPopupPosition;
     private bool openReenabledPopupNextFrame;
+    private string configurationPopupMessage = "";
+    private bool openConfigurationPopupNextFrame;
 
     public ConfigWindow(Plugin plugin)
         : base("###ConfigWindow")
@@ -69,23 +79,6 @@ public class ConfigWindow : Window, IDisposable
 
     public override void PreDraw()
     {
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.04f, 0.04f, 0.05f, 1.0f));
-        ImGui.PushStyleColor(ImGuiCol.TitleBg, Vector4.Zero);
-        ImGui.PushStyleColor(ImGuiCol.TitleBgActive, Vector4.Zero);
-        ImGui.PushStyleColor(ImGuiCol.TitleBgCollapsed, Vector4.Zero);
-        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1f, 1f, 1f, 1f));
-
-        var orange = HexToColor("#ffb300");
-        var orangeHover = MultiplyColor(orange, 1.08f);
-        var orangeActive = MultiplyColor(orange, 0.92f);
-
-        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrab, orange);
-        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabHovered, orangeHover);
-        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabActive, orangeActive);
-
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1.0f);
-        ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarSize, 10.0f);
-        ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarRounding, 8.0f);
     }
 
     public override void Draw()
@@ -138,42 +131,43 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
+            if (ImGui.BeginTabItem("Plugin Config", (ImGuiTabItemFlags)(1 << 7)))
+            {
+                DrawPluginConfigTab();
+                ImGui.EndTabItem();
+            }
+
             ImGui.EndTabBar();
         }
+
+        DrawConfigurationResultPopup();
+        fileDialogManager.Draw();
     }
 
     public override void PostDraw()
     {
-        ImGui.PopStyleVar(3);
-        ImGui.PopStyleColor(8);
     }
 
     private void DrawTopButtons(Vector2 windowSize)
     {
         var savedCursor = ImGui.GetCursorPos();
 
-        ImGui.SetCursorPos(new Vector2(windowSize.X - 118, 4));
+        var helpButtonSize = new Vector2(58, 21);
+        var closeButtonSize = new Vector2(24, 21);
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        ImGui.SetCursorPos(new Vector2(windowSize.X - helpButtonSize.X - closeButtonSize.X - spacing - 8f, 4));
 
-        PushColoredButton("#ffb300", Vector4.One);
-        if (ImGui.Button("HELP", new Vector2(58, 21)))
+        if (ImGui.Button("HELP", helpButtonSize))
             OpenHelpUrl();
-        PopColoredButton();
 
         ImGui.SameLine();
 
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.2f, 0.2f, 0.6f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.8f, 0.2f, 0.2f, 0.9f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(1.0f, 0.2f, 0.2f, 1.0f));
-
-        if (ImGui.Button("X", new Vector2(44, 21)))
+        if (ImGui.Button("X", closeButtonSize))
         {
             IsOpen = false;
-            ImGui.PopStyleColor(3);
             ImGui.SetCursorPos(savedCursor);
             return;
         }
-
-        ImGui.PopStyleColor(3);
         ImGui.SetCursorPos(savedCursor);
     }
 
@@ -273,7 +267,6 @@ public class ConfigWindow : Window, IDisposable
         {
             DrawCompactTimezoneCombo();
             DrawCompactFormatCombo();
-            DrawCompactColonCombo();
 
             var profile = configuration.GetActiveProfile();
             bool showLocalTime = profile.ShowLocalTime;
@@ -283,56 +276,242 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
-            Help($"Badge automatically follows timezone: {configuration.SelectedTimeZone.ToShortText()}");
+            DrawFavoriteTimezonesSection();
         });
     }
 
     private void DrawCompactTimezoneCombo()
     {
-        var items = new[] { "EST", "PST", "UTC", "BST", "JST", "MST", "ACST" };
-        int zoneIndex = configuration.SelectedTimeZone switch
-        {
-            ClockTimeZone.EST => 0,
-            ClockTimeZone.Pacific => 1,
-            ClockTimeZone.Universal => 2,
-            ClockTimeZone.BST => 3,
-            ClockTimeZone.JST => 4,
-            ClockTimeZone.MST => 5,
-            ClockTimeZone.ACST => 6,
-            _ => 0
-        };
-
         ImGui.Text("Primary Timezone");
         ImGui.SameLine();
-        ImGui.SetNextItemWidth(88f);
 
-        if (ImGui.BeginCombo("##PrimaryTimezone", items[zoneIndex]))
+        var currentLabel = TimeZoneHelper.GetComboLabel(configuration.SelectedTimeZoneId);
+        var popupId = "PrimaryTimezonePopup";
+
+        if (ImGui.Button($"{currentLabel}  ▼##PrimaryTimezoneDropdownButton", new Vector2(260f, 0f)))
+            ImGui.OpenPopup(popupId);
+
+        var buttonMin = ImGui.GetItemRectMin();
+        var buttonMax = ImGui.GetItemRectMax();
+        var typedTimeZoneId = string.Empty;
+        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(timeZoneFilter)
+            && TimeZoneHelper.TryResolveTimeZone(timeZoneFilter, out typedTimeZoneId);
+
+        ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 336f : 296f), ImGuiCond.Always);
+
+        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
         {
-            for (int i = 0; i < items.Length; i++)
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputText("##PrimaryTimezoneFilter", ref timeZoneFilter, 96);
+            ImGui.Separator();
+
+            if (hasTypedTimeZone)
             {
-                bool selected = i == zoneIndex;
-                if (ImGui.Selectable(items[i], selected))
+                bool typedSelected = string.Equals(configuration.SelectedTimeZoneId, typedTimeZoneId, StringComparison.OrdinalIgnoreCase);
+                if (DrawTimeZoneSelectable($"Use typed ID: {TimeZoneHelper.GetComboLabel(typedTimeZoneId)}", typedSelected, typedTimeZoneId))
                 {
-                    configuration.SelectedTimeZone = i switch
-                    {
-                        0 => ClockTimeZone.EST,
-                        1 => ClockTimeZone.Pacific,
-                        2 => ClockTimeZone.Universal,
-                        3 => ClockTimeZone.BST,
-                        4 => ClockTimeZone.JST,
-                        5 => ClockTimeZone.MST,
-                        6 => ClockTimeZone.ACST,
-                        _ => ClockTimeZone.EST
-                    };
+                    configuration.SelectedTimeZoneId = typedTimeZoneId;
                     configuration.Save();
+                    timeZoneFilter = "";
+                    ImGui.CloseCurrentPopup();
                 }
 
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
+                ImGui.Separator();
             }
 
-            ImGui.EndCombo();
+            if (ImGui.BeginChild("##PrimaryTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            {
+                foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
+                {
+                    if (!TimeZoneHelper.MatchesFilter(timeZone, timeZoneFilter))
+                        continue;
+
+                    bool selected = string.Equals(configuration.SelectedTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    {
+                        configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                        configuration.Save();
+                        timeZoneFilter = "";
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndChild();
+            ImGui.EndPopup();
         }
+
+        ImGui.SameLine();
+        DrawFavoriteTimezoneButton();
+
+        DrawCountryTimezoneSelector();
+    }
+
+    private TimeZoneInfo[] GetOrderedTimeZonesForPrimaryCombo()
+    {
+        var favoriteIds = configuration.FavoriteTimeZoneIds
+            .Select(TimeZoneHelper.NormalizeTimeZoneId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return TimeZoneHelper.GetSystemTimeZones()
+            .OrderByDescending(timeZone => favoriteIds.Contains(TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id), StringComparer.OrdinalIgnoreCase))
+            .ThenBy(timeZone => timeZone.BaseUtcOffset)
+            .ThenBy(timeZone => timeZone.Id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private bool DrawTimeZoneSelectable(string label, bool selected, string timeZoneId)
+    {
+        var highlighted = TimeZoneHelper.ShouldHighlightTimeZone(timeZoneId);
+        if (highlighted)
+            ImGui.PushStyleColor(ImGuiCol.Text, GoldTextColor);
+
+        var clicked = ImGui.Selectable(label, selected);
+
+        if (highlighted && ImGui.IsItemHovered())
+            ImGui.SetTooltip("Commonly Used");
+
+        if (highlighted)
+            ImGui.PopStyleColor();
+
+        return clicked;
+    }
+
+    private void DrawFavoriteTimezoneButton()
+    {
+        var normalizedId = TimeZoneHelper.NormalizeTimeZoneId(configuration.SelectedTimeZoneId);
+        var isFavorite = configuration.FavoriteTimeZoneIds.Any(id =>
+            string.Equals(TimeZoneHelper.NormalizeTimeZoneId(id), normalizedId, StringComparison.OrdinalIgnoreCase));
+
+        if (isFavorite)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, GoldTextColor);
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.36f, 0.26f, 0.08f, 0.95f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.48f, 0.34f, 0.10f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.56f, 0.40f, 0.12f, 1f));
+        }
+
+        if (ImGui.Button("★##FavoriteTimezone", new Vector2(30f, 0f)))
+        {
+            if (isFavorite)
+            {
+                configuration.FavoriteTimeZoneIds.RemoveAll(id =>
+                    string.Equals(TimeZoneHelper.NormalizeTimeZoneId(id), normalizedId, StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                configuration.FavoriteTimeZoneIds.Add(normalizedId);
+            }
+
+            configuration.Save();
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(isFavorite ? "Remove from favorites" : "Add to favorites");
+
+        if (isFavorite)
+            ImGui.PopStyleColor(4);
+    }
+
+    private void DrawFavoriteTimezonesSection()
+    {
+        ImGui.Spacing();
+
+        var arrow = favoriteTimezonesExpanded ? "▼" : "▶";
+        if (ImGui.Selectable($"{arrow} Favorite Timezones##FavoriteTimezonesHeader", false))
+            favoriteTimezonesExpanded = !favoriteTimezonesExpanded;
+
+        if (!favoriteTimezonesExpanded)
+            return;
+
+        ImGui.TextDisabled("Favorite timezones can be selected to change the current timezone");
+
+        if (configuration.FavoriteTimeZoneIds.Count == 0)
+        {
+            ImGui.TextDisabled("No favorite timezones added yet.");
+            return;
+        }
+
+        for (var i = 0; i < configuration.FavoriteTimeZoneIds.Count; i++)
+        {
+            var timeZoneId = TimeZoneHelper.NormalizeTimeZoneId(configuration.FavoriteTimeZoneIds[i]);
+            configuration.FavoriteTimeZoneIds[i] = timeZoneId;
+
+            var selected = string.Equals(configuration.SelectedTimeZoneId, timeZoneId, StringComparison.OrdinalIgnoreCase);
+            if (ImGui.Selectable($"{TimeZoneHelper.GetComboLabel(timeZoneId)}##FavoriteTimezone{i}", selected))
+            {
+                configuration.SelectedTimeZoneId = timeZoneId;
+                configuration.Save();
+            }
+        }
+    }
+
+    private void DrawCountryTimezoneSelector()
+    {
+        ImGui.Spacing();
+        ImGui.TextWrapped("Didn't find what you are looking for? Try by the country instead:");
+
+        var selectedCountryLabel = selectedCountryTimeZone?.Label ?? "Select country";
+        var popupId = "CountryTimezonePopup";
+
+        if (ImGui.Button($"{selectedCountryLabel}  ▼##CountryTimezoneDropdownButton", new Vector2(205f, 0f)))
+            ImGui.OpenPopup(popupId);
+
+        var buttonMin = ImGui.GetItemRectMin();
+        var buttonMax = ImGui.GetItemRectMax();
+
+        ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420f, 266f), ImGuiCond.Always);
+
+        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        {
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputText("##CountryTimezoneFilter", ref countryTimeZoneFilter, 96);
+            ImGui.Separator();
+
+            if (ImGui.BeginChild("##CountryTimezoneScrollableList", new Vector2(0f, 214f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            {
+                foreach (var option in TimeZoneHelper.GetCountryTimeZoneOptions())
+                {
+                    if (!TimeZoneHelper.MatchesCountryFilter(option, countryTimeZoneFilter))
+                        continue;
+
+                    var selected = selectedCountryTimeZone != null
+                        && string.Equals(selectedCountryTimeZone.CountryName, option.CountryName, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(selectedCountryTimeZone.TimeZoneId, option.TimeZoneId, StringComparison.OrdinalIgnoreCase);
+
+                    if (ImGui.Selectable(option.Label, selected))
+                    {
+                        selectedCountryTimeZone = option;
+                        countryTimeZoneFilter = "";
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndChild();
+            ImGui.EndPopup();
+        }
+
+        ImGui.SameLine();
+        ImGui.BeginDisabled(selectedCountryTimeZone == null);
+        if (ImGui.Button("✓##ApplyCountryTimezone", new Vector2(28f, 0f)) && selectedCountryTimeZone != null)
+        {
+            configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(selectedCountryTimeZone.TimeZoneId);
+            configuration.Save();
+            timeZoneFilter = "";
+        }
+        ImGui.EndDisabled();
+
+        ImGui.TextDisabled("Search by country and hit \"✓\" to automaticaly find timezone.");
     }
 
     private void DrawCompactFormatCombo()
@@ -424,7 +603,7 @@ public class ConfigWindow : Window, IDisposable
             PushColoredButton("#ffb300", Vector4.One);
             if (ImGui.Button("Add Alarm"))
             {
-                configuration.AddAlarmFromEditor(editorZone);
+                AlarmConfigurationService.AddFromEditor(configuration, editorZone);
                 configuration.Save();
             }
             PopColoredButton();
@@ -437,9 +616,9 @@ public class ConfigWindow : Window, IDisposable
             {
                 var temp = new AlarmEntry
                 {
-                    DateTimeText = configuration.BuildAlarmEditorDateTimeText(editorZone),
+                    DateTimeText = AlarmConfigurationService.BuildEditorDateTimeText(configuration, editorZone),
                     Message = string.IsNullOrWhiteSpace(configuration.AlarmEditorMessage) ? "Alarm" : configuration.AlarmEditorMessage.Trim(),
-                    TimeZone = editorZone
+                    TimeZoneId = editorZone
                 };
 
                 plugin.TestAlarmOutput(temp.BuildTriggerMessage(configuration.TimeFormat));
@@ -452,7 +631,7 @@ public class ConfigWindow : Window, IDisposable
             PushColoredButton("#D180FF", Vector4.One);
             if (ImGui.Button("Edit Alarm") && editingAlarmId.HasValue)
             {
-                if (configuration.UpdateAlarmFromEditor(editingAlarmId.Value, editorZone))
+                if (AlarmConfigurationService.UpdateFromEditor(configuration, editingAlarmId.Value, editorZone))
                 {
                     configuration.Save();
                     ClearAlarmEditingState();
@@ -492,7 +671,7 @@ public class ConfigWindow : Window, IDisposable
                     PushSmallRemoveButton();
                     if (ImGui.SmallButton($"X##RemoveAlarm{alarm.Id}"))
                     {
-                        configuration.RemoveAlarm(alarm.Id);
+                        AlarmConfigurationService.Remove(configuration, alarm.Id);
                         if (editingAlarmId == alarm.Id)
                             ClearAlarmEditingState();
                         configuration.Save();
@@ -516,7 +695,7 @@ public class ConfigWindow : Window, IDisposable
                         if (DrawAlarmReenableButton($"ReenableAlarm{alarm.Id}", alarmActionButtonSize))
                         {
                             var popupAnchor = ImGui.GetItemRectMin();
-                            if (configuration.ReenableAlarmForToday(alarm.Id))
+                            if (AlarmConfigurationService.ReenableForToday(configuration, alarm.Id))
                             {
                                 configuration.Save();
                                 reenabledPopupPosition = new Vector2(popupAnchor.X, popupAnchor.Y - 6f);
@@ -561,15 +740,21 @@ public class ConfigWindow : Window, IDisposable
             }
 
             ImGui.Spacing();
-            ImGui.TextColored(new Vector4(1f, 0.85f, 0.45f, 1f), "Detected system message:");
+            ImGui.TextColored(GoldTextColor, "Latest Lodestone maintenance:");
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(configuration.LastDetectedMaintenanceMessage)
-                ? "No maintenance message captured yet."
+                ? "No Lodestone maintenance found yet."
                 : configuration.LastDetectedMaintenanceMessage);
 
             if (configuration.HasDetectedMaintenanceTime)
             {
                 ImGui.Spacing();
-                ImGui.Text($"Detected maintenance time: {configuration.DetectedMaintenanceDateTimeText} {configuration.SelectedTimeZone.ToShortText()}");
+                ImGui.TextColored(GoldTextColor, $"Detected maintenance time: {configuration.DetectedMaintenanceDateTimeText} {configuration.DetectedMaintenanceTimeZoneText}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(configuration.LastMaintenanceNewsUrl))
+            {
+                ImGui.Spacing();
+                ImGui.TextWrapped(configuration.LastMaintenanceNewsUrl);
             }
         });
     }
@@ -696,6 +881,8 @@ public class ConfigWindow : Window, IDisposable
                 textSizeInputValue = configuration.GetActiveProfile().ClockTextScale;
             }
             PopColoredButton();
+
+            DrawCompactColonCombo();
         });
 
         Section("Visibility", () =>
@@ -967,7 +1154,7 @@ public class ConfigWindow : Window, IDisposable
     private void DrawAlarmSelectors()
     {
         var editorZone = GetAlarmEditorTimeZone();
-        configuration.RefreshAlarmEditorDateForLocalDay(editorZone);
+        AlarmConfigurationService.RefreshEditorDateForLocalDay(configuration, editorZone);
 
         var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorZone);
         var year = zoneNow.Year;
@@ -1096,24 +1283,24 @@ public class ConfigWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        ImGui.TextDisabled(editorZone.ToShortText());
+        ImGui.TextDisabled(TimeZoneHelper.ToShortText(editorZone));
     }
 
 
-    private ClockTimeZone GetAlarmEditorTimeZone()
+    private string GetAlarmEditorTimeZone()
     {
-        return editingAlarmTimeZone ?? configuration.SelectedTimeZone;
+        return editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId;
     }
 
     private void LoadAlarmIntoEditor(AlarmEntry alarm)
     {
         editingAlarmId = alarm.Id;
-        editingAlarmTimeZone = alarm.TimeZone;
+        editingAlarmTimeZoneId = alarm.GetEffectiveTimeZoneId();
 
-        if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.TimeZone, out var alarmUtc))
+        if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var alarmUtc))
             return;
 
-        var alarmLocal = TimeZoneHelper.ConvertFromUtc(alarmUtc, alarm.TimeZone);
+        var alarmLocal = TimeZoneHelper.ConvertFromUtc(alarmUtc, alarm.GetEffectiveTimeZoneId());
         configuration.AlarmEditorDay = alarmLocal.Day;
         configuration.AlarmEditorMinute = alarmLocal.Minute;
         configuration.AlarmEditorMessage = alarm.Message ?? "";
@@ -1135,7 +1322,7 @@ public class ConfigWindow : Window, IDisposable
     private void ClearAlarmEditingState()
     {
         editingAlarmId = null;
-        editingAlarmTimeZone = null;
+        editingAlarmTimeZoneId = null;
     }
 
     private bool DrawAlarmEditIconButton(string id, Vector2 buttonSize)
@@ -1235,7 +1422,7 @@ public class ConfigWindow : Window, IDisposable
         DrawCommandLine("/clock settings", "Open settings");
         DrawCommandLine("/clockalarms", "Open settings directly on the Alarms tab");
         DrawCommandLine("/alarms", "Open settings directly on the Alarms tab");
-        DrawCommandLine("/clock timezone est|pst|utc|bst|jst|mst|acst", "Change the main clock timezone");
+        DrawCommandLine("/clock timezone <TimeZoneInfo ID or alias>", "Change the main clock timezone");
         DrawCommandLine("/clock format 12|24", "Switch between 12h and 24h");
         DrawCommandLine("/clock colon default|always|hidden|slow|fast", "Change colon animation");
         DrawCommandLine("/clock layout horizontal|vertical", "Change active profile layout");
@@ -1244,6 +1431,115 @@ public class ConfigWindow : Window, IDisposable
         DrawCommandLine("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Manage profiles");
 
         ImGui.PopTextWrapPos();
+    }
+
+
+    private void DrawPluginConfigTab()
+    {
+        ImGui.SetCursorPosX(ImGui.GetStyle().WindowPadding.X);
+        ImGui.Spacing();
+        ImGui.SetCursorPosX(ImGui.GetStyle().WindowPadding.X);
+        ImGui.TextWrapped("Export/Import 'Clock' plugin configuration containing all configuration/customizations/Options etc");
+
+        ImGui.Spacing();
+
+        if (ImGui.Button("Export", new Vector2(86f, 0f)))
+            OpenExportDialog();
+
+        ImGui.SameLine();
+
+        if (ImGui.Button("Import", new Vector2(86f, 0f)))
+            OpenImportDialog();
+    }
+
+    private void OpenExportDialog()
+    {
+        fileDialogManager.SaveFileDialog(
+            "Export Clock configuration",
+            "Text files{.txt},.*",
+            "ClockConfiguration",
+            ".txt",
+            (success, path) =>
+            {
+                if (!success || string.IsNullOrWhiteSpace(path))
+                    return;
+
+                if (plugin.TryExportConfiguration(path, out var error))
+                    ShowConfigurationPopup("Plugin configuration exported with success!");
+                else
+                    ShowConfigurationPopup($"Failed to export plugin configuration: {error}");
+            });
+    }
+
+    private void OpenImportDialog()
+    {
+        fileDialogManager.OpenFileDialog(
+            "Import Clock configuration",
+            "Text files{.txt},.*",
+            (success, path) =>
+            {
+                if (!success || string.IsNullOrWhiteSpace(path))
+                    return;
+
+                if (plugin.TryImportConfiguration(path, out var error))
+                {
+                    RefreshLocalUiStateFromConfiguration();
+                    ShowConfigurationPopup("Plugin configuration imported with success!");
+                }
+                else
+                {
+                    ShowConfigurationPopup($"Failed to import plugin configuration: {error}");
+                }
+            });
+    }
+
+    private void RefreshLocalUiStateFromConfiguration()
+    {
+        textSizeInputValue = configuration.GetActiveProfile().ClockTextScale;
+        presetSelection = configuration.PreviewPresetSelection;
+        editingAlarmId = null;
+        editingAlarmTimeZoneId = null;
+        timeZoneFilter = "";
+        countryTimeZoneFilter = "";
+        selectedCountryTimeZone = null;
+    }
+
+    private void ShowConfigurationPopup(string message)
+    {
+        configurationPopupMessage = message;
+        openConfigurationPopupNextFrame = true;
+    }
+
+    private void DrawConfigurationResultPopup()
+    {
+        const string popupId = "ClockConfigurationResultPopup";
+
+        if (openConfigurationPopupNextFrame)
+        {
+            var center = ImGui.GetWindowPos() + (ImGui.GetWindowSize() * 0.5f);
+            ImGui.SetNextWindowPos(center, ImGuiCond.Always, new Vector2(0.5f, 0.5f));
+            ImGui.SetNextWindowSize(new Vector2(360f, 95f), ImGuiCond.Appearing);
+            ImGui.OpenPopup(popupId);
+            openConfigurationPopupNextFrame = false;
+        }
+
+        if (ImGui.BeginPopup(popupId))
+        {
+            var messageSize = ImGui.CalcTextSize(configurationPopupMessage);
+            var availableWidth = ImGui.GetContentRegionAvail().X;
+            if (messageSize.X < availableWidth)
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ((availableWidth - messageSize.X) * 0.5f));
+
+            ImGui.TextWrapped(configurationPopupMessage);
+            ImGui.Spacing();
+
+            var buttonSize = new Vector2(80f, 0f);
+            ImGui.SetCursorPosX((ImGui.GetWindowSize().X - buttonSize.X) * 0.5f);
+            if (ImGui.Button("Ok", buttonSize))
+                ImGui.CloseCurrentPopup();
+
+            ImGui.EndPopup();
+        }
     }
 
     private void DrawCommandLine(string command, string description)
@@ -1365,40 +1661,18 @@ public class ConfigWindow : Window, IDisposable
 
     private void PushColoredButton(string hexColor, Vector4 textColor)
     {
-        var color = HexToColor(hexColor);
-        var hover = MultiplyColor(color, 1.08f);
-        var active = MultiplyColor(color, 0.92f);
-
-        ImGui.PushStyleColor(ImGuiCol.Button, color);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hover);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
-        ImGui.PushStyleColor(ImGuiCol.Text, textColor);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1.0f);
     }
 
     private void PopColoredButton()
     {
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(4);
     }
 
     private void PushSmallRemoveButton()
     {
-        var color = HexToColor("#ff5757");
-        var hover = MultiplyColor(color, 1.08f);
-        var active = MultiplyColor(color, 0.92f);
-
-        ImGui.PushStyleColor(ImGuiCol.Button, color);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hover);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, active);
-        ImGui.PushStyleColor(ImGuiCol.Text, Vector4.One);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 1.0f);
     }
 
     private void PopSmallRemoveButton()
     {
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor(4);
     }
 
     private static Vector4 HexToColor(string hex)

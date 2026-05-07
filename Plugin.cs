@@ -1,18 +1,17 @@
 using System;
 using System.Globalization;
 using System.Linq;
-using System.Text.RegularExpressions;
-using Dalamud.Game.Chat;
+using System.Threading.Tasks;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.Toast;
-using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Interface.Windowing;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using Clock.Services;
 using Clock.Windows;
 
 namespace Clock;
@@ -34,10 +33,13 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ICondition condition;
     private readonly IChatGui chatGui;
     private readonly IToastGui toastGui;
+    private readonly LodestoneMaintenanceService maintenanceService = new();
 
     private bool hasAutoStarted;
     private bool wantedMainWindowOpen;
     private DateTime lastReminderCheckUtc = DateTime.MinValue;
+    private DateTime lastMaintenanceRefreshStartUtc = DateTime.MinValue;
+    private Task<LodestoneMaintenanceInfo?>? maintenanceRefreshTask;
 
     private readonly HashSet<string> triggeredMaintenanceKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<Guid> recentlyTriggeredAlarmIds = new();
@@ -80,7 +82,7 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage =
-                "Clock commands: /clock, /clock help, /alarms, /clock timezone est|pst|utc|bst|jst|mst|acst, /clock format 12|24, " +
+                "Clock commands: /clock, /clock help, /alarms, /clock timezone <TimeZoneInfo ID>, /clock format 12|24, " +
                 "/clock colon default|always|hidden|slow|fast, /clock layout horizontal|vertical, " +
                 "/clock preset classic|minimal|gold|retro, /clock lock, /clock unlock, " +
                 "/clock profile next|list|set <n>|add <name>|rename <name>|delete"
@@ -106,14 +108,13 @@ public sealed class Plugin : IDalamudPlugin
         pluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         pluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
-        chatGui.ChatMessage += OnChatMessage;
     }
 
     public void Dispose()
     {
         Configuration.Save();
 
-        chatGui.ChatMessage -= OnChatMessage;
+        maintenanceService.Dispose();
 
         pluginInterface.UiBuilder.Draw -= DrawUI;
         pluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
@@ -169,6 +170,7 @@ public sealed class Plugin : IDalamudPlugin
         lastReminderCheckUtc = nowUtc;
 
         CheckAllAlarms(nowUtc);
+        UpdateMaintenanceDetection(nowUtc);
         CheckMaintenanceReminder(nowUtc);
     }
 
@@ -184,7 +186,7 @@ public sealed class Plugin : IDalamudPlugin
             if (!alarm.Enabled || alarm.HasTriggered)
                 continue;
 
-            if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.TimeZone, out var alarmUtc))
+            if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var alarmUtc))
                 continue;
 
             if (nowUtc < alarmUtc || (nowUtc - alarmUtc).TotalSeconds > 60)
@@ -205,18 +207,83 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.Save();
     }
 
+    private void UpdateMaintenanceDetection(DateTime nowUtc)
+    {
+        if (!Configuration.MaintenanceReminderEnabled)
+            return;
+
+        if (maintenanceRefreshTask != null)
+        {
+            if (!maintenanceRefreshTask.IsCompleted)
+                return;
+
+            try
+            {
+                ApplyMaintenanceRefreshResult(maintenanceRefreshTask.Result);
+            }
+            catch (Exception ex)
+            {
+                log.Warning(ex, "Failed checking Lodestone maintenance news.");
+            }
+            finally
+            {
+                maintenanceRefreshTask = null;
+            }
+        }
+
+        if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalMinutes < 15)
+            return;
+
+        lastMaintenanceRefreshStartUtc = nowUtc;
+        Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
+        Configuration.Save();
+
+        maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync();
+    }
+
+    private void ApplyMaintenanceRefreshResult(LodestoneMaintenanceInfo? maintenance)
+    {
+        if (maintenance == null)
+            return;
+
+        bool changed =
+            !string.Equals(Configuration.LastMaintenanceNewsUrl, maintenance.Url, StringComparison.OrdinalIgnoreCase) ||
+            Configuration.DetectedMaintenanceStartUtc != maintenance.StartUtc;
+
+        if (!changed)
+            return;
+
+        Configuration.LastMaintenanceNewsTitle = maintenance.Title;
+        Configuration.LastMaintenanceNewsUrl = maintenance.Url;
+        Configuration.LastDetectedMaintenanceMessage = maintenance.BuildSummary();
+        Configuration.DetectedMaintenanceDateTimeText = maintenance.LocalStartText;
+        Configuration.DetectedMaintenanceTimeZoneText = maintenance.TimeZoneText;
+        Configuration.DetectedMaintenanceStartUtc = maintenance.StartUtc;
+        Configuration.HasDetectedMaintenanceTime = true;
+        Configuration.LastMaintenanceDetectionTimestampUtc = DateTime.UtcNow;
+        Configuration.Save();
+    }
+
     private void CheckMaintenanceReminder(DateTime nowUtc)
     {
         if (!Configuration.MaintenanceReminderEnabled)
             return;
 
-        if (string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceDateTimeText))
-            return;
+        DateTime maintenanceUtc;
 
-        if (!TimeZoneHelper.TryParseInZone(
-                Configuration.DetectedMaintenanceDateTimeText,
-                Configuration.SelectedTimeZone,
-                out var maintenanceUtc))
+        if (Configuration.DetectedMaintenanceStartUtc > DateTime.MinValue)
+        {
+            maintenanceUtc = DateTime.SpecifyKind(Configuration.DetectedMaintenanceStartUtc, DateTimeKind.Utc);
+        }
+        else if (!string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceDateTimeText) &&
+                 TimeZoneHelper.TryParseInZone(
+                     Configuration.DetectedMaintenanceDateTimeText,
+                     Configuration.SelectedTimeZoneId,
+                     out var legacyMaintenanceUtc))
+        {
+            maintenanceUtc = legacyMaintenanceUtc;
+        }
+        else
         {
             return;
         }
@@ -245,160 +312,16 @@ public sealed class Plugin : IDalamudPlugin
             ? (Math.Abs(lead.TotalHours - 24) < 0.01 ? "24 hours" : $"{lead.TotalHours:0} hour")
             : $"{lead.TotalMinutes:0} minutes";
 
-        var message = $"Scheduled maintenance starts in {leadText}.";
+        var zoneText = string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceTimeZoneText)
+            ? TimeZoneHelper.ToShortText(Configuration.SelectedTimeZoneId)
+            : Configuration.DetectedMaintenanceTimeZoneText;
+
+        var message = $"Scheduled maintenance starts in {leadText}. ({Configuration.DetectedMaintenanceDateTimeText} {zoneText})";
         chatGui.Print(message, "Clock");
         toastGui.ShowQuest(message, new QuestToastOptions
         {
             PlaySound = false
         });
-    }
-
-    private void OnChatMessage(IHandleableChatMessage chatMessage)
-    {
-        try
-        {
-            var type = chatMessage.LogKind;
-            var message = chatMessage.Message;
-            var text = message.TextValue;
-            if (string.IsNullOrWhiteSpace(text))
-                return;
-
-            if (!LooksLikeMaintenanceSystemMessage(type, message, text))
-                return;
-
-            Configuration.LastDetectedMaintenanceMessage = text;
-            Configuration.LastMaintenanceDetectionTimestampUtc = DateTime.UtcNow;
-
-            if (TryExtractMaintenanceDateTime(text, out var maintenanceDateTimeText))
-            {
-                Configuration.DetectedMaintenanceDateTimeText = maintenanceDateTimeText;
-                Configuration.HasDetectedMaintenanceTime = true;
-            }
-            else
-            {
-                Configuration.HasDetectedMaintenanceTime = false;
-            }
-
-            Configuration.Save();
-        }
-        catch (Exception ex)
-        {
-            log.Error(ex, "Failed parsing maintenance system message.");
-        }
-    }
-
-    private bool LooksLikeMaintenanceSystemMessage(XivChatType type, SeString message, string text)
-    {
-        var lowered = text.ToLowerInvariant();
-
-        if (!lowered.Contains("maintenance"))
-            return false;
-
-        bool hasTimeWindow =
-            Regex.IsMatch(text, @"from\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+to\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\d{1,2}:\d{2}\s+[ap]\.m\.\s+\((?:PDT|PST|UTC|GMT|EST|BST|JST|MST|ACST)\)", RegexOptions.IgnoreCase) ||
-            Regex.IsMatch(text, @"from\s+.+?\s+to\s+.+?\((?:PDT|PST|UTC|GMT|EST|BST|JST|MST|ACST)\)", RegexOptions.IgnoreCase);
-
-        if (!hasTimeWindow)
-            return false;
-
-        bool hasMaintenanceColorPayload = message.Payloads.OfType<UIForegroundPayload>().Any();
-
-        bool likelySystemChannel =
-            type == XivChatType.SystemMessage ||
-            type == XivChatType.SystemError ||
-            type == XivChatType.Notice;
-
-        return hasMaintenanceColorPayload || likelySystemChannel;
-    }
-
-    private bool TryExtractMaintenanceDateTime(string text, out string dateTimeText)
-    {
-        dateTimeText = string.Empty;
-
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, Configuration.SelectedTimeZone);
-        var currentYear = zoneNow.Year;
-
-        var patterns = new[]
-        {
-            new Regex(@"\b(?<year>\d{4})[-/](?<month>\d{1,2})[-/](?<day>\d{1,2})\s+(?<hour>\d{1,2}):(?<minute>\d{2})\b", RegexOptions.IgnoreCase),
-            new Regex(@"\b(?<month>\d{1,2})/(?<day>\d{1,2})/(?<year>\d{4})\s+(?<hour>\d{1,2}):(?<minute>\d{2})\b", RegexOptions.IgnoreCase),
-            new Regex(@"\b(?<month>\d{1,2})/(?<day>\d{1,2})\s+(?<hour>\d{1,2}):(?<minute>\d{2})\b", RegexOptions.IgnoreCase),
-            new Regex(@"\b(?<monthName>jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.\s+(?<day>\d{1,2}),\s+(?<year>\d{4})\s+(?<hour>\d{1,2}):(?<minute>\d{2})\s+(?<ampm>a\.m\.|p\.m\.)", RegexOptions.IgnoreCase),
-            new Regex(@"\b(?<monthName>jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(?<day>\d{1,2})(?:,\s*(?<year>\d{4}))?\s+(?<hour>\d{1,2}):(?<minute>\d{2})\b", RegexOptions.IgnoreCase),
-        };
-
-        foreach (var regex in patterns)
-        {
-            var match = regex.Match(text);
-            if (!match.Success)
-                continue;
-
-            int year = currentYear;
-
-            if (match.Groups["year"].Success && int.TryParse(match.Groups["year"].Value, out var parsedYear))
-                year = parsedYear;
-
-            int month;
-            if (match.Groups["month"].Success)
-            {
-                month = int.Parse(match.Groups["month"].Value, CultureInfo.InvariantCulture);
-            }
-            else if (match.Groups["monthName"].Success)
-            {
-                month = MonthNameToNumber(match.Groups["monthName"].Value);
-            }
-            else
-            {
-                continue;
-            }
-
-            if (!int.TryParse(match.Groups["day"].Value, out var day))
-                continue;
-            if (!int.TryParse(match.Groups["hour"].Value, out var hour))
-                continue;
-            if (!int.TryParse(match.Groups["minute"].Value, out var minute))
-                continue;
-
-            if (match.Groups["ampm"].Success)
-            {
-                var ampm = match.Groups["ampm"].Value.ToLowerInvariant();
-                hour %= 12;
-                if (ampm.Contains("p"))
-                    hour += 12;
-            }
-
-            if (month < 1 || month > 12)
-                continue;
-
-            var maxDay = DateTime.DaysInMonth(year, month);
-            if (day < 1 || day > maxDay)
-                continue;
-
-            var dt = new DateTime(year, month, day, hour, minute, 0);
-            dateTimeText = dt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-            return true;
-        }
-
-        return false;
-    }
-
-    private static int MonthNameToNumber(string monthName)
-    {
-        return monthName[..3].ToLowerInvariant() switch
-        {
-            "jan" => 1,
-            "feb" => 2,
-            "mar" => 3,
-            "apr" => 4,
-            "may" => 5,
-            "jun" => 6,
-            "jul" => 7,
-            "aug" => 8,
-            "sep" => 9,
-            "oct" => 10,
-            "nov" => 11,
-            _ => 12,
-        };
     }
 
     private void OnCommand(string command, string args)
@@ -482,16 +405,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private void HandleTimezoneCommand(string rest)
     {
-        if (!TryParseTimeZone(rest, out var zone))
+        if (!TimeZoneHelper.TryResolveTimeZone(rest, out var timeZoneId))
         {
-            chatGui.PrintError("Invalid timezone. Use est, pst, utc, bst, jst, mst or acst.", "Clock");
+            chatGui.PrintError("Invalid timezone. Use a valid TimeZoneInfo ID like \"Eastern Standard Time\" or \"America/New_York\".", "Clock");
             return;
         }
 
-        Configuration.SelectedTimeZone = zone;
+        Configuration.SelectedTimeZoneId = timeZoneId;
         Configuration.Save();
 
-        chatGui.Print($"Timezone set to {zone.ToShortText()}.", "Clock");
+        chatGui.Print($"Timezone set to {TimeZoneHelper.GetComboLabel(timeZoneId)}.", "Clock");
     }
 
     private void HandleFormatCommand(string rest)
@@ -532,7 +455,7 @@ public sealed class Plugin : IDalamudPlugin
             }
             else
             {
-                var nowInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, Configuration.SelectedTimeZone);
+                var nowInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, Configuration.SelectedTimeZoneId);
                 sourceHour24 = nowInZone.Hour;
             }
 
@@ -702,65 +625,12 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private bool TryParseTimeZone(string input, out ClockTimeZone zone)
-    {
-        zone = Configuration.SelectedTimeZone;
-
-        switch (input.Trim().ToLowerInvariant())
-        {
-            case "est":
-                zone = ClockTimeZone.EST;
-                return true;
-
-            case "pst":
-            case "pdt":
-            case "pst/pdt":
-            case "pacific":
-                zone = ClockTimeZone.Pacific;
-                return true;
-
-            case "utc":
-            case "gmt":
-            case "utc/gmt":
-            case "universal":
-                zone = ClockTimeZone.Universal;
-                return true;
-
-            case "bst":
-            case "british":
-            case "britishsummer":
-            case "british summer":
-                zone = ClockTimeZone.BST;
-                return true;
-
-            case "jst":
-            case "japan":
-            case "tokyo":
-                zone = ClockTimeZone.JST;
-                return true;
-
-            case "mst":
-            case "mountain":
-                zone = ClockTimeZone.MST;
-                return true;
-
-            case "acst":
-            case "australiacentral":
-            case "australia central":
-                zone = ClockTimeZone.ACST;
-                return true;
-
-            default:
-                return false;
-        }
-    }
-
     private void PrintHelp()
     {
         chatGui.Print("/clock - toggle clock", "Clock");
         chatGui.Print("/clock settings - open settings", "Clock");
         chatGui.Print("/clockalarms or /alarms - open settings on the alarms tab", "Clock");
-        chatGui.Print("/clock timezone est|pst|utc|bst|jst|mst|acst", "Clock");
+        chatGui.Print("/clock timezone <TimeZoneInfo ID or alias>", "Clock");
         chatGui.Print("/clock format 12|24", "Clock");
         chatGui.Print("/clock colon default|always|hidden|slow|fast", "Clock");
         chatGui.Print("/clock layout horizontal|vertical", "Clock");
@@ -822,6 +692,51 @@ public sealed class Plugin : IDalamudPlugin
         builder.Add(new UIForegroundPayload(0));
 
         return builder.BuiltString;
+    }
+
+    public bool TryExportConfiguration(string path, out string error)
+    {
+        try
+        {
+            Configuration.EnsureInitialized();
+            ConfigurationFileService.Export(Configuration, path);
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Failed to export Clock configuration.");
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public bool TryImportConfiguration(string path, out string error)
+    {
+        try
+        {
+            var importedConfiguration = ConfigurationFileService.Import(path);
+            importedConfiguration.Initialize(pluginInterface);
+            importedConfiguration.EnsureInitialized();
+
+            Configuration.CopyPublicStateFrom(importedConfiguration);
+            Configuration.Initialize(pluginInterface);
+            Configuration.EnsureInitialized();
+            Configuration.Save();
+
+            triggeredMaintenanceKeys.Clear();
+            recentlyTriggeredAlarmIds.Clear();
+            pluginInterface.UiBuilder.DisableCutsceneUiHide = !Configuration.HideDuringCutscenes;
+
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Failed to import Clock configuration.");
+            error = ex.Message;
+            return false;
+        }
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
