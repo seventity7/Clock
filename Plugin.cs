@@ -231,14 +231,16 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalMinutes < 15)
+        if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalHours < 6)
             return;
 
         lastMaintenanceRefreshStartUtc = nowUtc;
         Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
         Configuration.Save();
 
-        maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync();
+        maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync(
+            Configuration.LastMaintenanceNewsUrl,
+            Configuration.DetectedMaintenanceStartUtc);
     }
 
     private void ApplyMaintenanceRefreshResult(LodestoneMaintenanceInfo? maintenance)
@@ -681,7 +683,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         var builder = new SeStringBuilder();
 
-        // 57 costuma ficar bem mais próximo de amarelo vivo do que vermelho/laranja.
         builder.Add(new UIForegroundPayload(559));
         builder.AddText("[ALARM]");
         builder.Add(new UIForegroundPayload(0));

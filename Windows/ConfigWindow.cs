@@ -1,4 +1,3 @@
-// may07 - cleaning UI
 using System;
 using System.Diagnostics;
 using System.Globalization;
@@ -131,7 +130,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.EndTabItem();
             }
 
-            if (ImGui.BeginTabItem("Plugin Config", (ImGuiTabItemFlags)(1 << 7)))
+            if (ImGui.BeginTabItem("Plugin Config", ImGuiTabItemFlags.Trailing))
             {
                 DrawPluginConfigTab();
                 ImGui.EndTabItem();
@@ -739,6 +738,8 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
+            ImGui.Spacing();
+            ImGui.TextDisabled("Maintenance detection uses English Lodestone maintenance notices.");
             ImGui.Spacing();
             ImGui.TextColored(GoldTextColor, "Latest Lodestone maintenance:");
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(configuration.LastDetectedMaintenanceMessage)

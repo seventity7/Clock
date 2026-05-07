@@ -1,8 +1,6 @@
-// Remaking maintenance detection system for Lodestone/RSS check instead
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text.RegularExpressions;
@@ -72,8 +70,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
     public LodestoneMaintenanceService()
     {
-        httpClient.Timeout = TimeSpan.FromSeconds(15);
-        httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Clock Dalamud Plugin/1.0");
+        httpClient.Timeout = TimeSpan.FromSeconds(10);
     }
 
     public void Dispose()
@@ -81,39 +78,32 @@ public sealed class LodestoneMaintenanceService : IDisposable
         httpClient.Dispose();
     }
 
-    public async Task<LodestoneMaintenanceInfo?> GetLatestMaintenanceAsync(CancellationToken cancellationToken = default)
+    public async Task<LodestoneMaintenanceInfo?> GetLatestMaintenanceAsync(
+        string? cachedUrl = null,
+        DateTime cachedStartUtc = default,
+        CancellationToken cancellationToken = default)
     {
         var indexHtml = await httpClient.GetStringAsync(MaintenanceNewsUri, cancellationToken).ConfigureAwait(false);
-        var detailUrls = ExtractDetailUrls(indexHtml).Take(10).ToList();
+        var detailUrl = ExtractFirstDetailUrl(indexHtml);
+        if (string.IsNullOrWhiteSpace(detailUrl))
+            return null;
 
         var nowUtc = DateTime.UtcNow;
-        var candidates = new List<LodestoneMaintenanceInfo>();
-
-        foreach (var detailUrl in detailUrls)
+        if (!string.IsNullOrWhiteSpace(cachedUrl) &&
+            string.Equals(cachedUrl, detailUrl, StringComparison.OrdinalIgnoreCase) &&
+            cachedStartUtc > nowUtc.AddMinutes(-30))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
-            {
-                var html = await httpClient.GetStringAsync(detailUrl, cancellationToken).ConfigureAwait(false);
-                if (!TryParseMaintenancePage(html, detailUrl, nowUtc, out var maintenance))
-                    continue;
-
-                candidates.Add(maintenance);
-            }
-            catch
-            {
-                // A single Lodestone page failing should not prevent newer entries from being checked.
-            }
+            return null;
         }
 
-        return candidates
-            .Where(x => x.EndUtc == null || x.EndUtc.Value >= nowUtc.AddMinutes(-30))
-            .OrderBy(x => x.StartUtc)
-            .FirstOrDefault();
+        var html = await httpClient.GetStringAsync(detailUrl, cancellationToken).ConfigureAwait(false);
+        if (!TryParseMaintenancePage(html, detailUrl, nowUtc, out var maintenance))
+            return null;
+
+        return maintenance;
     }
 
-    private static IEnumerable<string> ExtractDetailUrls(string html)
+    private static string? ExtractFirstDetailUrl(string html)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -125,8 +115,10 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
             var url = new Uri(MaintenanceNewsUri, path).ToString();
             if (seen.Add(url))
-                yield return url;
+                return url;
         }
+
+        return null;
     }
 
     private static bool TryParseMaintenancePage(
