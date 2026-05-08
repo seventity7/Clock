@@ -15,8 +15,13 @@ public sealed class AlarmEntry
     public string TimeZoneId = "";
     public bool Enabled = true;
     public bool HasTriggered = false;
+    public bool SnoozeEnabled = false;
+    public int SnoozeMinutes = 5;
+    public DateTime SnoozedUntilUtc = DateTime.MinValue;
+    public bool SnoozeCanceled = false;
+    public bool SnoozeTriggered = false;
 
-    public string BuildListLine(ClockTimeFormat displayFormat)
+    public string BuildListLine(ClockTimeFormat displayFormat, string defaultMessage = "Alarm")
     {
         var effectiveTimeZoneId = GetEffectiveTimeZoneId();
         if (!TimeZoneHelper.TryParseInZone(DateTimeText, effectiveTimeZoneId, out var utc))
@@ -24,37 +29,25 @@ public sealed class AlarmEntry
 
         var local = TimeZoneHelper.ConvertFromUtc(utc, effectiveTimeZoneId);
         var dateText = local.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
-        var suffix = local.ToString("tt", CultureInfo.InvariantCulture)
-            .ToLowerInvariant()
-            .Replace("am", "a.m.")
-            .Replace("pm", "p.m.");
+        var timeText = TimeFormatHelper.FormatClock(local, displayFormat);
+        var messageText = string.IsNullOrWhiteSpace(Message) ? defaultMessage : Message.Trim();
 
-        string timeText = displayFormat == ClockTimeFormat.TwentyFourHour
-            ? $"{local:HH:mm} {suffix}"
-            : $"{local:hh:mm} {suffix}";
-
-        var messageText = string.IsNullOrWhiteSpace(Message) ? "Alarm" : Message.Trim();
         return $"{dateText} - {TimeZoneHelper.ToShortText(effectiveTimeZoneId)} - {timeText} | {messageText}";
     }
 
-    public string BuildTriggerMessage(ClockTimeFormat displayFormat)
+    public string BuildTriggerMessage(ClockTimeFormat displayFormat, bool isSnooze = false, string defaultMessage = "Alarm")
     {
         var effectiveTimeZoneId = GetEffectiveTimeZoneId();
         if (!TimeZoneHelper.TryParseInZone(DateTimeText, effectiveTimeZoneId, out var utc))
             return "✓ (ERR) --:-- → Invalid alarm";
 
-        var local = TimeZoneHelper.ConvertFromUtc(utc, effectiveTimeZoneId);
-        var suffix = local.ToString("tt", CultureInfo.InvariantCulture)
-            .ToLowerInvariant()
-            .Replace("am", "a.m.")
-            .Replace("pm", "p.m.");
+        var triggerUtc = isSnooze && SnoozedUntilUtc > DateTime.MinValue ? SnoozedUntilUtc : utc;
+        var local = TimeZoneHelper.ConvertFromUtc(triggerUtc, effectiveTimeZoneId);
+        var timeText = TimeFormatHelper.FormatClock(local, displayFormat);
+        var custom = string.IsNullOrWhiteSpace(Message) ? defaultMessage : Message.Trim();
+        var snoozePrefix = isSnooze ? "[SNOOZE] " : string.Empty;
 
-        string timeText = displayFormat == ClockTimeFormat.TwentyFourHour
-            ? $"{local:HH:mm} {suffix}"
-            : $"{local:hh:mm} {suffix}";
-
-        var custom = string.IsNullOrWhiteSpace(Message) ? "Alarm" : Message.Trim();
-        return $"✓ ({TimeZoneHelper.ToShortText(effectiveTimeZoneId)}) {timeText} → {custom}";
+        return $"{snoozePrefix}✓ ({TimeZoneHelper.ToShortText(effectiveTimeZoneId)}) {timeText} → {custom}";
     }
 
     public string GetEffectiveTimeZoneId()

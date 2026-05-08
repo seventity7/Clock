@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,14 +37,21 @@ public sealed class LodestoneMaintenanceInfo
 
     public string BuildSummary()
     {
-        return $"{Title} - starts at {LocalStartText} {TimeZoneText}";
+        return $"{Title} - {LocalStartText} {TimeZoneText}";
     }
 }
 
 public sealed class LodestoneMaintenanceService : IDisposable
 {
-    private const string MaintenanceNewsUrl = "https://na.finalfantasyxiv.com/lodestone/news/category/2";
-    private static readonly Uri MaintenanceNewsUri = new(MaintenanceNewsUrl);
+    private const string EnglishUsMaintenanceNewsUrl = "https://na.finalfantasyxiv.com/lodestone/news/category/2";
+    private const string EnglishUkMaintenanceNewsUrl = "https://eu.finalfantasyxiv.com/lodestone/news/category/2";
+    private const string JapaneseMaintenanceNewsUrl = "https://jp.finalfantasyxiv.com/lodestone/news/category/2";
+    private const string GermanMaintenanceNewsUrl = "https://de.finalfantasyxiv.com/lodestone/news/category/2";
+    private const string FrenchMaintenanceNewsUrl = "https://fr.finalfantasyxiv.com/lodestone/news/category/2";
+
+    private const string MonthNamePattern = @"[\p{L}\.]+";
+    private const string TimeSeparatorPattern = @"(?:to|until|bis|au|à|a|～|~|-|–|—)";
+    private const string ZonePattern = @"[\(（](?<zone>[A-Z]{2,5})[\)）]";
 
     private static readonly Regex DetailLinkRegex = new(
         "href=\\\"(?<path>/lodestone/news/detail/[^\\\"]+)\\\"",
@@ -53,17 +61,32 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
     private static readonly Regex WhitespaceRegex = new("\\s+", RegexOptions.Compiled);
 
-    private static readonly Regex PageCategoryRegex = new(
-        @"#\s*\[(?<category>[^\]]+)\]",
+    private static readonly Regex EnglishMonthWindowRegex = new(
+        $@"(?<startMonth>{MonthNamePattern})\s+(?<startDay>\d{{1,2}}),?\s+(?<startYear>\d{{4}})\s+" +
+        $@"(?<startHour>\d{{1,2}}):(?<startMinute>\d{{2}})\s*(?<startPeriod>a\.m\.|p\.m\.|am|pm)?\s+{TimeSeparatorPattern}\s+" +
+        $@"(?:(?<endMonth>{MonthNamePattern})\s+(?<endDay>\d{{1,2}}),?\s+(?<endYear>\d{{4}})\s+)?" +
+        $@"(?<endHour>\d{{1,2}}):(?<endMinute>\d{{2}})\s*(?<endPeriod>a\.m\.|p\.m\.|am|pm)?\s*{ZonePattern}",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly Regex MaintenanceWindowRegex = new(
-        @"(?<startMonth>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+" +
-        @"(?<startDay>\d{1,2}),\s+(?<startYear>\d{4})\s+" +
-        @"(?<startHour>\d{1,2}):(?<startMinute>\d{2})\s*(?<startPeriod>a\.m\.|p\.m\.|am|pm)?\s+to\s+" +
-        @"(?:(?<endMonth>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+" +
-        @"(?<endDay>\d{1,2}),\s+(?<endYear>\d{4})\s+)?" +
-        @"(?<endHour>\d{1,2}):(?<endMinute>\d{2})\s*(?<endPeriod>a\.m\.|p\.m\.|am|pm)?\s*\((?<zone>[A-Z]{2,5})\)",
+    private static readonly Regex DayMonthWindowRegex = new(
+        $@"(?<startDay>\d{{1,2}})\.?\s+(?<startMonth>{MonthNamePattern})\s+(?<startYear>\d{{4}})\s+" +
+        $@"(?<startHour>\d{{1,2}}):(?<startMinute>\d{{2}})\s*(?<startPeriod>a\.m\.|p\.m\.|am|pm)?\s+{TimeSeparatorPattern}\s+" +
+        $@"(?:(?<endDay>\d{{1,2}})\.?\s+(?<endMonth>{MonthNamePattern})\s+(?<endYear>\d{{4}})\s+)?" +
+        $@"(?<endHour>\d{{1,2}}):(?<endMinute>\d{{2}})\s*(?<endPeriod>a\.m\.|p\.m\.|am|pm)?\s*{ZonePattern}",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex NumericWindowRegex = new(
+        $@"(?<startYear>\d{{4}})[/-](?<startMonth>\d{{1,2}})[/-](?<startDay>\d{{1,2}})\s+" +
+        $@"(?<startHour>\d{{1,2}}):(?<startMinute>\d{{2}})\s*(?<startPeriod>a\.m\.|p\.m\.|am|pm)?\s+{TimeSeparatorPattern}\s+" +
+        $@"(?:(?<endYear>\d{{4}})[/-](?<endMonth>\d{{1,2}})[/-](?<endDay>\d{{1,2}})\s+)?" +
+        $@"(?<endHour>\d{{1,2}}):(?<endMinute>\d{{2}})\s*(?<endPeriod>a\.m\.|p\.m\.|am|pm)?\s*{ZonePattern}",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex JapaneseWindowRegex = new(
+        $@"(?<startYear>\d{{4}})年\s*(?<startMonth>\d{{1,2}})月\s*(?<startDay>\d{{1,2}})日\s*" +
+        $@"(?<startHour>\d{{1,2}}):(?<startMinute>\d{{2}})\s+{TimeSeparatorPattern}\s+" +
+        $@"(?:(?<endYear>\d{{4}})年\s*(?<endMonth>\d{{1,2}})月\s*(?<endDay>\d{{1,2}})日\s*)?" +
+        $@"(?<endHour>\d{{1,2}}):(?<endMinute>\d{{2}})\s*{ZonePattern}",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly HttpClient httpClient = new();
@@ -79,17 +102,20 @@ public sealed class LodestoneMaintenanceService : IDisposable
     }
 
     public async Task<LodestoneMaintenanceInfo?> GetLatestMaintenanceAsync(
+        LodestoneMaintenanceLanguage language,
         string? cachedUrl = null,
         DateTime cachedStartUtc = default,
+        bool forceRefresh = false,
         CancellationToken cancellationToken = default)
     {
-        var indexHtml = await httpClient.GetStringAsync(MaintenanceNewsUri, cancellationToken).ConfigureAwait(false);
-        var detailUrl = ExtractFirstDetailUrl(indexHtml);
+        var maintenanceNewsUri = GetMaintenanceNewsUri(language);
+        var indexHtml = await httpClient.GetStringAsync(maintenanceNewsUri, cancellationToken).ConfigureAwait(false);
+        var detailUrl = ExtractFirstDetailUrl(indexHtml, maintenanceNewsUri);
         if (string.IsNullOrWhiteSpace(detailUrl))
             return null;
 
         var nowUtc = DateTime.UtcNow;
-        if (!string.IsNullOrWhiteSpace(cachedUrl) &&
+        if (!forceRefresh && !string.IsNullOrWhiteSpace(cachedUrl) &&
             string.Equals(cachedUrl, detailUrl, StringComparison.OrdinalIgnoreCase) &&
             cachedStartUtc > nowUtc.AddMinutes(-30))
         {
@@ -97,13 +123,37 @@ public sealed class LodestoneMaintenanceService : IDisposable
         }
 
         var html = await httpClient.GetStringAsync(detailUrl, cancellationToken).ConfigureAwait(false);
-        if (!TryParseMaintenancePage(html, detailUrl, nowUtc, out var maintenance))
+        if (!TryParseMaintenancePage(html, detailUrl, language, nowUtc, out var maintenance))
             return null;
 
         return maintenance;
     }
 
-    private static string? ExtractFirstDetailUrl(string html)
+    public static string GetLanguageName(LodestoneMaintenanceLanguage language)
+    {
+        return language switch
+        {
+            LodestoneMaintenanceLanguage.EnglishUk => "English (UK)",
+            LodestoneMaintenanceLanguage.Japanese => "Japanese",
+            LodestoneMaintenanceLanguage.German => "Deutsch",
+            LodestoneMaintenanceLanguage.French => "Français",
+            _ => "English (US)"
+        };
+    }
+
+    private static Uri GetMaintenanceNewsUri(LodestoneMaintenanceLanguage language)
+    {
+        return new Uri(language switch
+        {
+            LodestoneMaintenanceLanguage.EnglishUk => EnglishUkMaintenanceNewsUrl,
+            LodestoneMaintenanceLanguage.Japanese => JapaneseMaintenanceNewsUrl,
+            LodestoneMaintenanceLanguage.German => GermanMaintenanceNewsUrl,
+            LodestoneMaintenanceLanguage.French => FrenchMaintenanceNewsUrl,
+            _ => EnglishUsMaintenanceNewsUrl
+        });
+    }
+
+    private static string? ExtractFirstDetailUrl(string html, Uri maintenanceNewsUri)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -113,7 +163,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
             if (string.IsNullOrWhiteSpace(path))
                 continue;
 
-            var url = new Uri(MaintenanceNewsUri, path).ToString();
+            var url = new Uri(maintenanceNewsUri, path).ToString();
             if (seen.Add(url))
                 return url;
         }
@@ -124,26 +174,19 @@ public sealed class LodestoneMaintenanceService : IDisposable
     private static bool TryParseMaintenancePage(
         string html,
         string url,
+        LodestoneMaintenanceLanguage language,
         DateTime nowUtc,
         out LodestoneMaintenanceInfo maintenance)
     {
         maintenance = null!;
 
         var text = NormalizeHtmlText(html);
-        var category = PageCategoryRegex.Match(text).Groups["category"].Value.Trim();
-        if (!category.Equals("Maintenance", StringComparison.OrdinalIgnoreCase))
-            return false;
-
         var title = ExtractTitle(html);
-        if (title.Contains("follow-up", StringComparison.OrdinalIgnoreCase) ||
-            title.Contains("cancellation", StringComparison.OrdinalIgnoreCase) ||
-            text.Contains("Cancellation of", StringComparison.OrdinalIgnoreCase))
-        {
+        if (ShouldSkipTitleOrText(title, text))
             return false;
-        }
 
-        var dateSection = ExtractDateSection(text);
-        var match = MaintenanceWindowRegex.Match(dateSection);
+        var dateSection = ExtractDateSection(text, language);
+        var match = FindMaintenanceWindowMatch(dateSection);
         if (!match.Success)
             return false;
 
@@ -157,7 +200,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
         if (!TryBuildLocalDateTime(match, "end", out var localEnd))
             return false;
 
-        if (!match.Groups["endMonth"].Success)
+        if (!match.Groups["endMonth"].Success || !match.Groups["endDay"].Success || !match.Groups["endYear"].Success)
         {
             localEnd = new DateTime(localStart.Year, localStart.Month, localStart.Day, localEnd.Hour, localEnd.Minute, 0);
             if (localEnd <= localStart)
@@ -181,10 +224,41 @@ public sealed class LodestoneMaintenanceService : IDisposable
         return true;
     }
 
+    private static Match FindMaintenanceWindowMatch(string dateSection)
+    {
+        var match = EnglishMonthWindowRegex.Match(dateSection);
+        if (match.Success)
+            return match;
+
+        match = DayMonthWindowRegex.Match(dateSection);
+        if (match.Success)
+            return match;
+
+        match = NumericWindowRegex.Match(dateSection);
+        if (match.Success)
+            return match;
+
+        return JapaneseWindowRegex.Match(dateSection);
+    }
+
+    private static bool ShouldSkipTitleOrText(string title, string text)
+    {
+        var combined = RemoveDiacritics($"{title} {text}").ToLowerInvariant();
+        return combined.Contains("follow-up")
+            || combined.Contains("follow up")
+            || combined.Contains("cancellation")
+            || combined.Contains("cancelled")
+            || combined.Contains("canceled")
+            || combined.Contains("annulation")
+            || combined.Contains("abbruch")
+            || combined.Contains("取消")
+            || combined.Contains("中止");
+    }
+
     private static string NormalizeHtmlText(string html)
     {
         var withLineBreaks = Regex.Replace(html, @"<\s*br\s*/?\s*>", "\n", RegexOptions.IgnoreCase);
-        withLineBreaks = Regex.Replace(withLineBreaks, @"</\s*(p|div|li|h1|h2|h3)\s*>", "\n", RegexOptions.IgnoreCase);
+        withLineBreaks = Regex.Replace(withLineBreaks, @"</\s*(p|div|li|h1|h2|h3|dt|dd)\s*>", "\n", RegexOptions.IgnoreCase);
         var withoutTags = HtmlTagRegex.Replace(withLineBreaks, " ");
         var decoded = WebUtility.HtmlDecode(withoutTags);
         return WhitespaceRegex.Replace(decoded, " ").Trim();
@@ -204,13 +278,47 @@ public sealed class LodestoneMaintenanceService : IDisposable
         return WhitespaceRegex.Replace(decoded, " ").Trim();
     }
 
-    private static string ExtractDateSection(string text)
+    private static string ExtractDateSection(string text, LodestoneMaintenanceLanguage language)
     {
-        var start = text.IndexOf("[Date & Time]", StringComparison.OrdinalIgnoreCase);
+        var markers = language switch
+        {
+            LodestoneMaintenanceLanguage.Japanese => new[] { "[日時]", "日時" },
+            LodestoneMaintenanceLanguage.German => new[] { "[Datum & Uhrzeit]", "Datum & Uhrzeit", "Datum und Uhrzeit" },
+            LodestoneMaintenanceLanguage.French => new[] { "[Date et heures]", "[Date et heure]", "Date et heures", "Date et heure" },
+            _ => new[] { "[Date & Time]", "Date & Time", "Date and Time" }
+        };
+
+        var start = -1;
+        foreach (var marker in markers)
+        {
+            start = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (start >= 0)
+                break;
+        }
+
         if (start < 0)
             return text;
 
-        var end = text.IndexOf("[Affected Service]", start, StringComparison.OrdinalIgnoreCase);
+        var endMarkers = new[]
+        {
+            "[Affected Service]",
+            "Affected Service",
+            "[Betroffener Dienst]",
+            "Betroffener Dienst",
+            "[Service concerné]",
+            "Service concerné",
+            "[対象サービス]",
+            "対象サービス"
+        };
+
+        var end = -1;
+        foreach (var marker in endMarkers)
+        {
+            var index = text.IndexOf(marker, start, StringComparison.OrdinalIgnoreCase);
+            if (index > start && (end < 0 || index < end))
+                end = index;
+        }
+
         return end > start
             ? text[start..end]
             : text[start..];
@@ -261,20 +369,29 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
     private static bool TryGetMonth(string text, out int month)
     {
-        month = text.Trim().TrimEnd('.').ToLowerInvariant()[..3] switch
+        month = 0;
+        var clean = RemoveDiacritics(text).Trim().TrimEnd('.').ToLowerInvariant();
+        if (int.TryParse(clean, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericMonth))
         {
-            "jan" => 1,
-            "feb" => 2,
-            "mar" => 3,
-            "apr" => 4,
-            "may" => 5,
-            "jun" => 6,
-            "jul" => 7,
-            "aug" => 8,
-            "sep" => 9,
-            "oct" => 10,
-            "nov" => 11,
-            "dec" => 12,
+            month = numericMonth;
+            return month is >= 1 and <= 12;
+        }
+
+        var key = clean.Length > 4 ? clean[..4] : clean;
+        month = key switch
+        {
+            "jan" or "janu" or "janv" => 1,
+            "feb" or "febr" or "fevr" => 2,
+            "mar" or "marc" or "mars" or "maer" => 3,
+            "apr" or "avri" => 4,
+            "may" or "mai" => 5,
+            "jun" or "june" or "juin" or "juni" => 6,
+            "jul" or "july" or "juil" or "juli" => 7,
+            "aug" or "augu" or "aout" => 8,
+            "sep" or "sept" => 9,
+            "oct" or "octo" or "okt" or "okto" => 10,
+            "nov" or "nove" => 11,
+            "dec" or "dece" or "dez" or "deze" => 12,
             _ => 0
         };
 
@@ -356,5 +473,20 @@ public sealed class LodestoneMaintenanceService : IDisposable
                 return false;
             }
         }
+    }
+
+    private static string RemoveDiacritics(string value)
+    {
+        var normalized = value.Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(normalized.Length);
+
+        foreach (var character in normalized)
+        {
+            var unicodeCategory = CharUnicodeInfo.GetUnicodeCategory(character);
+            if (unicodeCategory != UnicodeCategory.NonSpacingMark)
+                builder.Append(character);
+        }
+
+        return builder.ToString().Normalize(NormalizationForm.FormC);
     }
 }

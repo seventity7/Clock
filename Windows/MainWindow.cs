@@ -1,5 +1,6 @@
 ﻿// may07 - cleaning UI
 using System;
+using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -402,14 +403,28 @@ public class MainWindow : Window, IDisposable
 
         float centerStartX = contentX + localLayout.LabelColumnWidth + (localLayout.LabelColumnWidth > 0 ? styleMetrics.BadgeGap : 0f);
         float centerLineWidth = localLayout.TimeLayout.TotalSize.X;
+        var shadowColor = profile.LocalTimeShowShadowText ? profile.LocalTimeShadowColor : new Vector4(0, 0, 0, 0);
+
+        if (localLayout.Parts.IsFullText)
+        {
+            var fullPos = new Vector2(
+                centerStartX + MathF.Floor((centerLineWidth - localLayout.TimeLayout.TotalSize.X) * 0.5f),
+                contentY + MathF.Floor((localLayout.ContentSize.Y - localLayout.TimeLayout.TotalSize.Y) * 0.5f));
+            DrawOutlinedTextScaled(localLayout.Parts.FullText, fullPos - windowPos, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+            return;
+        }
+
+        float timeStartY = contentY + MathF.Floor((localLayout.ContentSize.Y - localLayout.TimeLayout.TotalSize.Y) * 0.5f);
+        if (!string.IsNullOrWhiteSpace(localLayout.Parts.Prefix))
+        {
+            DrawCenteredLineCustom(localLayout.Parts.Prefix, centerStartX, centerLineWidth, timeStartY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+            timeStartY += CalculateScaledTextSize(localLayout.Parts.Prefix, localLayout.Scale).Y + MathF.Max(2f, 2f * localLayout.Scale);
+        }
 
         var leftDigits = GetVerticalLeftLines(localLayout.Parts.Left);
-        float timeStartY = contentY + MathF.Floor((localLayout.ContentSize.Y - localLayout.TimeLayout.TotalSize.Y) * 0.5f);
         float leftBlockHeight = leftDigits.Length * lineHeight;
         float colonY = timeStartY + leftBlockHeight;
         float minuteStartY = colonY + lineHeight;
-
-        var shadowColor = profile.LocalTimeShowShadowText ? profile.LocalTimeShadowColor : new Vector4(0, 0, 0, 0);
         var labelStartY = contentY + MathF.Floor((localLayout.ContentSize.Y - localLayout.LabelTextHeight) * 0.5f);
 
         if (localLayout.UseBadge)
@@ -421,45 +436,33 @@ public class MainWindow : Window, IDisposable
         }
         else
         {
-            DrawVerticalStackedText(
-                localLayout.LabelText,
-                contentX,
-                localLayout.LabelColumnWidth,
-                labelStartY,
-                localLayout.BadgeScale,
-                profile.LocalTimeTextColor,
-                shadowColor,
-                styleMetrics,
-                windowPos);
+            DrawVerticalStackedText(localLayout.LabelText, contentX, localLayout.LabelColumnWidth, labelStartY, localLayout.BadgeScale, profile.LocalTimeTextColor, shadowColor, styleMetrics, windowPos);
         }
 
         for (int i = 0; i < leftDigits.Length; i++)
         {
-            DrawCenteredLineCustom(
-                leftDigits[i],
-                centerStartX,
-                centerLineWidth,
-                timeStartY + (i * lineHeight),
-                localLayout.Scale,
-                profile.LocalTimeTextColor,
-                shadowColor,
-                styleMetrics);
+            DrawCenteredLineCustom(leftDigits[i], centerStartX, centerLineWidth, timeStartY + (i * lineHeight), localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
         }
 
         var colonVisible = ShouldShowColon(plugin.Configuration.ColonAnimation);
-        DrawCenteredLineCustom(
-            LocalColonText,
-            centerStartX,
-            centerLineWidth,
-            colonY,
-            localLayout.Scale,
-            profile.LocalTimeTextColor,
-            shadowColor,
-            styleMetrics,
-            colonVisible);
-
+        DrawCenteredLineCustom(LocalColonText, centerStartX, centerLineWidth, colonY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics, colonVisible);
         DrawCenteredLineCustom(localLayout.Parts.MinuteLeft, centerStartX, centerLineWidth, minuteStartY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
         DrawCenteredLineCustom(localLayout.Parts.MinuteRight, centerStartX, centerLineWidth, minuteStartY + lineHeight, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+
+        var nextY = minuteStartY + (lineHeight * 2);
+        if (localLayout.Parts.HasSeconds)
+        {
+            DrawCenteredLineCustom(LocalColonText, centerStartX, centerLineWidth, nextY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics, colonVisible);
+            DrawCenteredLineCustom(localLayout.Parts.SecondLeft, centerStartX, centerLineWidth, nextY + lineHeight, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+            DrawCenteredLineCustom(localLayout.Parts.SecondRight, centerStartX, centerLineWidth, nextY + (lineHeight * 2), localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+            nextY += lineHeight * 3;
+        }
+
+        if (!string.IsNullOrWhiteSpace(localLayout.Parts.Suffix))
+        {
+            nextY += MathF.Max(2f, 2f * localLayout.Scale);
+            DrawCenteredLineCustom(localLayout.Parts.Suffix, centerStartX, centerLineWidth, nextY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+        }
     }
 
     private void DrawHorizontal(
@@ -535,9 +538,25 @@ public class MainWindow : Window, IDisposable
         float centerStartX = contentStartX + badgeRotatedWidth + (badgeRotatedWidth > 0 ? styleMetrics.BadgeGap : 0f);
         float centerLineWidth = layout.TotalSize.X;
 
-        var leftDigits = GetVerticalLeftLines(parts.Left);
-        float startY = panelPos.Y + MathF.Floor((panelSize.Y - layout.TotalSize.Y) * 0.5f);
+        if (parts.IsFullText)
+        {
+            var fullPos = new Vector2(
+                panelPos.X + MathF.Floor((panelSize.X - layout.TotalSize.X) * 0.5f),
+                panelPos.Y + MathF.Floor((panelSize.Y - layout.TotalSize.Y) * 0.5f));
+            DrawOutlinedTextScaled(parts.FullText, fullPos - windowPos, mainScale, profile.ClockTextColor, profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0), styleMetrics);
+            return;
+        }
 
+        float startY = panelPos.Y + MathF.Floor((panelSize.Y - layout.TotalSize.Y) * 0.5f);
+        var shadow = profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0);
+
+        if (!string.IsNullOrWhiteSpace(parts.Prefix))
+        {
+            DrawCenteredLineCustom(parts.Prefix, centerStartX, centerLineWidth, startY, mainScale, profile.ClockTextColor, shadow, styleMetrics);
+            startY += CalculateScaledTextSize(parts.Prefix, mainScale).Y + MathF.Max(2f, 2f * mainScale);
+        }
+
+        var leftDigits = GetVerticalLeftLines(parts.Left);
         float leftBlockHeight = leftDigits.Length * lineHeight;
         float colonY = startY + leftBlockHeight;
         float minuteStartY = colonY + lineHeight;
@@ -545,44 +564,35 @@ public class MainWindow : Window, IDisposable
         if (profile.ShowIcon)
         {
             float badgeMinY = colonY - MathF.Floor((badgeRotatedHeight - lineHeight) * 0.5f);
-            var badgeMin = new Vector2(
-                contentStartX,
-                badgeMinY + styleMetrics.BadgeVerticalOffset
-            );
-
-            var badgeMax = new Vector2(
-                badgeMin.X + badgeRotatedWidth,
-                badgeMin.Y + badgeRotatedHeight
-            );
-
+            var badgeMin = new Vector2(contentStartX, badgeMinY + styleMetrics.BadgeVerticalOffset);
+            var badgeMax = new Vector2(badgeMin.X + badgeRotatedWidth, badgeMin.Y + badgeRotatedHeight);
             DrawBadgeVertical(profile, styleMetrics, badgeText, badgeScale, badgeMin, badgeMax, windowPos);
         }
 
         for (int i = 0; i < leftDigits.Length; i++)
         {
-            DrawCenteredLine(
-                leftDigits[i],
-                centerStartX,
-                centerLineWidth,
-                startY + (i * lineHeight),
-                mainScale,
-                profile,
-                styleMetrics);
+            DrawCenteredLine(leftDigits[i], centerStartX, centerLineWidth, startY + (i * lineHeight), mainScale, profile, styleMetrics);
         }
 
         var colonVisible = ShouldShowColon(plugin.Configuration.ColonAnimation);
-        DrawCenteredLine(
-            ColonText,
-            centerStartX,
-            centerLineWidth,
-            colonY,
-            mainScale,
-            profile,
-            styleMetrics,
-            colonVisible);
-
+        DrawCenteredLine(ColonText, centerStartX, centerLineWidth, colonY, mainScale, profile, styleMetrics, colonVisible);
         DrawCenteredLine(parts.MinuteLeft, centerStartX, centerLineWidth, minuteStartY, mainScale, profile, styleMetrics);
         DrawCenteredLine(parts.MinuteRight, centerStartX, centerLineWidth, minuteStartY + lineHeight, mainScale, profile, styleMetrics);
+
+        var nextY = minuteStartY + (lineHeight * 2);
+        if (parts.HasSeconds)
+        {
+            DrawCenteredLine(ColonText, centerStartX, centerLineWidth, nextY, mainScale, profile, styleMetrics, colonVisible);
+            DrawCenteredLine(parts.SecondLeft, centerStartX, centerLineWidth, nextY + lineHeight, mainScale, profile, styleMetrics);
+            DrawCenteredLine(parts.SecondRight, centerStartX, centerLineWidth, nextY + (lineHeight * 2), mainScale, profile, styleMetrics);
+            nextY += lineHeight * 3;
+        }
+
+        if (!string.IsNullOrWhiteSpace(parts.Suffix))
+        {
+            nextY += MathF.Max(2f, 2f * mainScale);
+            DrawCenteredLineCustom(parts.Suffix, centerStartX, centerLineWidth, nextY, mainScale, profile.ClockTextColor, shadow, styleMetrics);
+        }
     }
 
     private static float GetBadgeVerticalWidth(Vector2 badgeTextSize, StyleMetrics styleMetrics)
@@ -871,32 +881,60 @@ public class MainWindow : Window, IDisposable
         float minuteDigitGap,
         float colonSideTighten)
     {
+        if (parts.IsFullText)
+        {
+            DrawOutlinedTextScaled(parts.FullText, basePos, scale, color, shadow, styleMetrics);
+            return;
+        }
+
+        var prefixText = string.IsNullOrWhiteSpace(parts.Prefix) ? string.Empty : parts.Prefix + " ";
+        var suffixText = string.IsNullOrWhiteSpace(parts.Suffix) ? string.Empty : " " + parts.Suffix;
+        var prefixSize = CalculateScaledTextSize(prefixText, scale);
         var leftSize = CalculateScaledTextSize(parts.Left, scale);
         var colonSize = CalculateScaledTextSize(colonText, scale);
         var minuteLeftSize = CalculateScaledTextSize(parts.MinuteLeft, scale);
         var minuteRightSize = CalculateScaledTextSize(parts.MinuteRight, scale);
-        var suffixText = string.IsNullOrWhiteSpace(parts.Suffix) ? "" : " " + parts.Suffix;
+        var secondLeftSize = CalculateScaledTextSize(parts.SecondLeft, scale);
+        var secondRightSize = CalculateScaledTextSize(parts.SecondRight, scale);
 
-        DrawOutlinedTextScaled(parts.Left, basePos, scale, color, shadow, styleMetrics);
-
-        var colonPos = new Vector2(basePos.X + leftSize.X - colonSideTighten, basePos.Y);
         var colonVisible = ShouldShowColon(plugin.Configuration.ColonAnimation);
-
         var colonColor = colonVisible ? color : new Vector4(color.X, color.Y, color.Z, 0f);
         var colonShadow = colonVisible ? shadow : new Vector4(0, 0, 0, 0);
 
+        var x = basePos.X;
+        if (!string.IsNullOrWhiteSpace(prefixText))
+        {
+            DrawOutlinedTextScaled(prefixText, new Vector2(x, basePos.Y), scale, color, shadow, styleMetrics);
+            x += prefixSize.X;
+        }
+
+        DrawOutlinedTextScaled(parts.Left, new Vector2(x, basePos.Y), scale, color, shadow, styleMetrics);
+
+        var colonPos = new Vector2(x + leftSize.X - colonSideTighten, basePos.Y);
         DrawOutlinedTextScaled(colonText, colonPos, scale, colonColor, colonShadow, styleMetrics);
 
-        float x = basePos.X + leftSize.X + colonSize.X - (colonSideTighten * 2.0f);
+        x += leftSize.X + colonSize.X - (colonSideTighten * 2.0f);
 
         DrawOutlinedTextScaled(parts.MinuteLeft, new Vector2(x, basePos.Y), scale, color, shadow, styleMetrics);
 
-        float secondMinuteX = x + minuteLeftSize.X + (minuteDigitGap * scale);
+        var secondMinuteX = x + minuteLeftSize.X + (minuteDigitGap * scale);
         DrawOutlinedTextScaled(parts.MinuteRight, new Vector2(secondMinuteX, basePos.Y), scale, color, shadow, styleMetrics);
+        x = secondMinuteX + minuteRightSize.X;
+
+        if (parts.HasSeconds)
+        {
+            var secondsColonX = x - (colonSideTighten * scale);
+            DrawOutlinedTextScaled(colonText, new Vector2(secondsColonX, basePos.Y), scale, colonColor, colonShadow, styleMetrics);
+            x += colonSize.X - (colonSideTighten * 2.0f);
+            DrawOutlinedTextScaled(parts.SecondLeft, new Vector2(x, basePos.Y), scale, color, shadow, styleMetrics);
+            var secondDigitX = x + secondLeftSize.X + (minuteDigitGap * scale);
+            DrawOutlinedTextScaled(parts.SecondRight, new Vector2(secondDigitX, basePos.Y), scale, color, shadow, styleMetrics);
+            x = secondDigitX + secondRightSize.X;
+        }
 
         if (!string.IsNullOrWhiteSpace(suffixText))
         {
-            float suffixX = secondMinuteX + minuteRightSize.X + (SuffixHorizontalOffset * scale);
+            var suffixX = x + (SuffixHorizontalOffset * scale);
             DrawOutlinedTextScaled(suffixText, new Vector2(suffixX, basePos.Y), scale, color, shadow, styleMetrics);
         }
     }
@@ -965,19 +1003,7 @@ public class MainWindow : Window, IDisposable
     {
         var zoneId = plugin.Configuration.SelectedTimeZoneId;
         var dateInZone = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, zoneId);
-
-        var minutes = dateInZone.ToString("mm");
-        var suffix = dateInZone.ToString("tt").ToLower().Replace("am", "a.m.").Replace("pm", "p.m.");
-
-        return new ClockParts
-        {
-            Left = plugin.Configuration.TimeFormat == ClockTimeFormat.TwentyFourHour
-                ? dateInZone.ToString("HH")
-                : dateInZone.ToString("%h"),
-            MinuteLeft = minutes[0].ToString(),
-            MinuteRight = minutes[1].ToString(),
-            Suffix = suffix
-        };
+        return BuildClockParts(dateInZone, plugin.Configuration.TimeFormat, plugin.Configuration.GetActiveProfile().LayoutMode);
     }
 
     private Vector2 GetMainPanelSize(ClockProfile profile)
@@ -1023,7 +1049,7 @@ public class MainWindow : Window, IDisposable
     {
         var scale = MathF.Max(0.35f, profile.LocalTimeTextScale);
         var styleMetrics = GetStyleMetrics(profile.LocalTimeDisplayStyle);
-        var parts = GetLocalClockParts(profile.LocalTimeFormat);
+        var parts = GetLocalClockParts(profile.LocalTimeFormat, profile.LayoutMode);
         const string badgeText = "LT";
 
         if (profile.LayoutMode == ClockLayoutMode.Vertical)
@@ -1162,20 +1188,71 @@ public class MainWindow : Window, IDisposable
         return totalLetterHeight;
     }
 
-    private static ClockParts GetLocalClockParts(ClockTimeFormat format)
+    private static ClockParts GetLocalClockParts(ClockTimeFormat format, ClockLayoutMode layoutMode)
     {
-        var localNow = DateTime.Now;
-        var minutes = localNow.ToString("mm");
-        var suffix = localNow.ToString("tt").ToLower().Replace("am", "a.m.").Replace("pm", "p.m.");
+        return BuildClockParts(DateTime.Now, format, layoutMode);
+    }
 
-        return new ClockParts
+    private static ClockParts BuildClockParts(DateTime dateTime, ClockTimeFormat format, ClockLayoutMode layoutMode = ClockLayoutMode.Horizontal)
+    {
+        var minutes = dateTime.ToString("mm");
+        var suffix = dateTime.ToString("tt", CultureInfo.InvariantCulture).ToLowerInvariant().Replace("am", "a.m.").Replace("pm", "p.m.");
+        var seconds = dateTime.ToString("ss");
+
+        return format switch
         {
-            Left = format == ClockTimeFormat.TwentyFourHour
-                ? localNow.ToString("HH")
-                : localNow.ToString("%h"),
-            MinuteLeft = minutes[0].ToString(),
-            MinuteRight = minutes[1].ToString(),
-            Suffix = suffix
+            ClockTimeFormat.TwelveHour => new ClockParts
+            {
+                Left = dateTime.ToString("%h", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString(),
+                Suffix = suffix
+            },
+            ClockTimeFormat.TwelveHourSeconds => new ClockParts
+            {
+                Left = dateTime.ToString("%h", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString(),
+                SecondLeft = seconds[0].ToString(),
+                SecondRight = seconds[1].ToString(),
+                Suffix = suffix
+            },
+            ClockTimeFormat.TwentyFourHourSeconds => new ClockParts
+            {
+                Left = dateTime.ToString("HH", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString(),
+                SecondLeft = seconds[0].ToString(),
+                SecondRight = seconds[1].ToString()
+            },
+            ClockTimeFormat.WeekdayTwentyFourHour when layoutMode == ClockLayoutMode.Vertical => new ClockParts
+            {
+                FullText = dateTime.ToString("ddd HH:mm", CultureInfo.InvariantCulture)
+            },
+            ClockTimeFormat.WeekdayTwentyFourHour => new ClockParts
+            {
+                Prefix = dateTime.ToString("ddd", CultureInfo.InvariantCulture),
+                Left = dateTime.ToString("HH", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString()
+            },
+            ClockTimeFormat.DateTwentyFourHour when layoutMode == ClockLayoutMode.Vertical => new ClockParts
+            {
+                FullText = dateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)
+            },
+            ClockTimeFormat.DateTwentyFourHour => new ClockParts
+            {
+                Prefix = dateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                Left = dateTime.ToString("HH", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString()
+            },
+            _ => new ClockParts
+            {
+                Left = dateTime.ToString("HH", CultureInfo.InvariantCulture),
+                MinuteLeft = minutes[0].ToString(),
+                MinuteRight = minutes[1].ToString()
+            }
         };
     }
 
@@ -1191,12 +1268,32 @@ public class MainWindow : Window, IDisposable
 
     private ClockLayoutMetrics GetClockLayoutMetrics(float scale, ClockParts parts, ClockLayoutMode layoutMode, string colonText, float minuteDigitGap, float colonSideTighten)
     {
+        if (parts.IsFullText)
+        {
+            return new ClockLayoutMetrics
+            {
+                TotalSize = CalculateScaledTextSize(parts.FullText, scale)
+            };
+        }
+
+        var prefixText = string.IsNullOrWhiteSpace(parts.Prefix) ? string.Empty : parts.Prefix + " ";
+        var suffixText = string.IsNullOrWhiteSpace(parts.Suffix) ? string.Empty : " " + parts.Suffix;
+        var prefixSize = CalculateScaledTextSize(prefixText, scale);
+        var suffixSize = CalculateScaledTextSize(suffixText, scale);
+
         if (layoutMode == ClockLayoutMode.Vertical)
         {
             var leftLines = GetVerticalLeftLines(parts.Left);
             float maxWidth = 0f;
             float verticalTotalHeight = 0f;
             float lineHeight = CalculateScaledTextSize("8", scale).Y;
+
+            if (!string.IsNullOrWhiteSpace(parts.Prefix))
+            {
+                var prefixVerticalSize = CalculateScaledTextSize(parts.Prefix, scale);
+                maxWidth = MathF.Max(maxWidth, prefixVerticalSize.X);
+                verticalTotalHeight += prefixVerticalSize.Y + MathF.Max(2f, 2f * scale);
+            }
 
             foreach (var line in leftLines)
             {
@@ -1213,6 +1310,22 @@ public class MainWindow : Window, IDisposable
             verticalTotalHeight += lineHeight;
             verticalTotalHeight += lineHeight;
 
+            if (parts.HasSeconds)
+            {
+                maxWidth = MathF.Max(maxWidth, CalculateScaledTextSize(parts.SecondLeft, scale).X);
+                maxWidth = MathF.Max(maxWidth, CalculateScaledTextSize(parts.SecondRight, scale).X);
+                verticalTotalHeight += lineHeight;
+                verticalTotalHeight += lineHeight;
+                verticalTotalHeight += lineHeight;
+            }
+
+            if (!string.IsNullOrWhiteSpace(parts.Suffix))
+            {
+                var suffixVerticalSize = CalculateScaledTextSize(parts.Suffix, scale);
+                maxWidth = MathF.Max(maxWidth, suffixVerticalSize.X);
+                verticalTotalHeight += MathF.Max(2f, 2f * scale) + suffixVerticalSize.Y;
+            }
+
             return new ClockLayoutMetrics
             {
                 TotalSize = new Vector2(maxWidth, verticalTotalHeight)
@@ -1223,20 +1336,34 @@ public class MainWindow : Window, IDisposable
         var colonSize = CalculateScaledTextSize(colonText, scale);
         var minuteLeftSize = CalculateScaledTextSize(parts.MinuteLeft, scale);
         var minuteRightSize = CalculateScaledTextSize(parts.MinuteRight, scale);
-        var suffixText = string.IsNullOrWhiteSpace(parts.Suffix) ? "" : " " + parts.Suffix;
-        var suffixSize = CalculateScaledTextSize(suffixText, scale);
+        var secondLeftSize = CalculateScaledTextSize(parts.SecondLeft, scale);
+        var secondRightSize = CalculateScaledTextSize(parts.SecondRight, scale);
 
         float totalWidth =
+            prefixSize.X +
             leftSize.X +
             colonSize.X +
             minuteLeftSize.X +
             (minuteDigitGap * scale) +
-            minuteRightSize.X +
-            (string.IsNullOrWhiteSpace(suffixText) ? 0f : (SuffixHorizontalOffset * scale) + suffixSize.X) - (colonSideTighten * 2.0f);
+            minuteRightSize.X -
+            (colonSideTighten * 2.0f);
+
+        if (parts.HasSeconds)
+        {
+            totalWidth +=
+                colonSize.X +
+                secondLeftSize.X +
+                (minuteDigitGap * scale) +
+                secondRightSize.X -
+                (colonSideTighten * 2.0f);
+        }
+
+        if (!string.IsNullOrWhiteSpace(suffixText))
+            totalWidth += (SuffixHorizontalOffset * scale) + suffixSize.X;
 
         float horizontalTotalHeight = MathF.Max(
-            leftSize.Y,
-            MathF.Max(colonSize.Y, MathF.Max(minuteLeftSize.Y, MathF.Max(minuteRightSize.Y, suffixSize.Y)))
+            prefixSize.Y,
+            MathF.Max(leftSize.Y, MathF.Max(colonSize.Y, MathF.Max(minuteLeftSize.Y, MathF.Max(minuteRightSize.Y, MathF.Max(secondLeftSize.Y, MathF.Max(secondRightSize.Y, suffixSize.Y))))))
         );
 
         return new ClockLayoutMetrics
@@ -1328,10 +1455,16 @@ public class MainWindow : Window, IDisposable
 
     private sealed class ClockParts
     {
+        public string Prefix = "";
         public string Left = "";
         public string MinuteLeft = "";
         public string MinuteRight = "";
+        public string SecondLeft = "";
+        public string SecondRight = "";
         public string Suffix = "";
+        public string FullText = "";
+        public bool HasSeconds => !string.IsNullOrWhiteSpace(SecondLeft) && !string.IsNullOrWhiteSpace(SecondRight);
+        public bool IsFullText => !string.IsNullOrWhiteSpace(FullText);
     }
 
     private sealed class LocalClockLayoutMetrics

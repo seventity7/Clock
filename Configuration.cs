@@ -20,7 +20,11 @@ public enum ClockTimeZone
 public enum ClockTimeFormat
 {
     TwelveHour = 0,
-    TwentyFourHour = 1
+    TwentyFourHour = 1,
+    TwelveHourSeconds = 2,
+    TwentyFourHourSeconds = 3,
+    WeekdayTwentyFourHour = 4,
+    DateTwentyFourHour = 5
 }
 
 public enum ColonAnimationMode
@@ -161,7 +165,7 @@ public sealed class ClockProfile
 [Serializable]
 public partial class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 17;
+    public int Version { get; set; } = 20;
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -176,6 +180,7 @@ public partial class Configuration : IPluginConfiguration
     public List<string> FavoriteTimeZoneIds = new();
     public ClockTimeFormat TimeFormat = ClockTimeFormat.TwelveHour;
     public ColonAnimationMode ColonAnimation = ColonAnimationMode.Blink;
+    public string UiLanguageCultureName = "en-US";
 
     public List<ClockProfile> Profiles = new();
     public int ActiveProfileIndex = 0;
@@ -258,7 +263,10 @@ public partial class Configuration : IPluginConfiguration
                 EnsureLocalTimeDefaults(profile);
         }
 
-        Version = 17;
+        if (string.IsNullOrWhiteSpace(UiLanguageCultureName))
+            UiLanguageCultureName = "en-US";
+
+        Version = 19;
     }
 
     private void MigrateTimeZones()

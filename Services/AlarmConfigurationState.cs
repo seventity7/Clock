@@ -12,10 +12,13 @@ public partial class Configuration
     public string AlarmEditorMessage = "";
     public string AlarmEditorLastLocalDateText = "";
     public int AlarmSoundId = 8;
+    public bool AlarmEditorSnoozeEnabled = false;
+    public int AlarmEditorSnoozeMinutes = 5;
 
     public List<AlarmEntry> Alarms = new();
 
     public bool MaintenanceReminderEnabled = false;
+    public LodestoneMaintenanceLanguage MaintenanceLanguage = LodestoneMaintenanceLanguage.EnglishUs;
     public bool MaintenanceRemind24Hours = true;
     public bool MaintenanceRemind1Hour = true;
     public bool MaintenanceRemind15Minutes = true;
@@ -27,6 +30,7 @@ public partial class Configuration
     public string LastMaintenanceNewsUrl = "";
     public bool HasDetectedMaintenanceTime = false;
     public DateTime LastMaintenanceDetectionTimestampUtc = DateTime.MinValue;
+    public string LastMaintenanceCheckStatus = "";
 
     // Legacy fields kept only for old saved configs migration
     public bool CustomAlarmEnabled = false;

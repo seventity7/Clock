@@ -40,6 +40,7 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime lastReminderCheckUtc = DateTime.MinValue;
     private DateTime lastMaintenanceRefreshStartUtc = DateTime.MinValue;
     private Task<LodestoneMaintenanceInfo?>? maintenanceRefreshTask;
+    private bool maintenanceRefreshRequestedManually;
 
     private readonly HashSet<string> triggeredMaintenanceKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<Guid> recentlyTriggeredAlarmIds = new();
@@ -82,7 +83,7 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage =
-                "Clock commands: /clock, /clock help, /alarms, /clock timezone <TimeZoneInfo ID>, /clock format 12|24, " +
+                "Clock commands: /clock, /clock help, /alarms, /clock timezone <TimeZoneInfo ID>, /clock format 12|24|12s|24s|weekday|date, " +
                 "/clock colon default|always|hidden|slow|fast, /clock layout horizontal|vertical, " +
                 "/clock preset classic|minimal|gold|retro, /clock lock, /clock unlock, " +
                 "/clock profile next|list|set <n>|add <name>|rename <name>|delete"
@@ -183,24 +184,49 @@ public sealed class Plugin : IDalamudPlugin
 
         foreach (var alarm in Configuration.Alarms)
         {
-            if (!alarm.Enabled || alarm.HasTriggered)
+            if (!alarm.Enabled)
                 continue;
 
-            if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var alarmUtc))
+            var hasPendingSnooze = alarm.SnoozedUntilUtc > DateTime.MinValue && !alarm.SnoozeTriggered;
+            if (alarm.HasTriggered && !hasPendingSnooze)
                 continue;
 
-            if (nowUtc < alarmUtc || (nowUtc - alarmUtc).TotalSeconds > 60)
+            if (!AlarmConfigurationService.TryGetPendingTriggerUtc(alarm, out var alarmUtc))
+                continue;
+
+            if (nowUtc < alarmUtc)
+            {
+                recentlyTriggeredAlarmIds.Remove(alarm.Id);
+                continue;
+            }
+
+            if ((nowUtc - alarmUtc).TotalSeconds > 60)
                 continue;
 
             if (recentlyTriggeredAlarmIds.Contains(alarm.Id))
                 continue;
 
             recentlyTriggeredAlarmIds.Add(alarm.Id);
-            alarm.HasTriggered = true;
             changed = true;
 
-            var triggerMessage = alarm.BuildTriggerMessage(Configuration.TimeFormat);
+            var isSnoozeTrigger = hasPendingSnooze;
+            var triggerMessage = alarm.BuildTriggerMessage(Configuration.TimeFormat, isSnoozeTrigger);
             SendAlarmOutput(triggerMessage);
+
+            if (isSnoozeTrigger)
+            {
+                alarm.SnoozedUntilUtc = DateTime.MinValue;
+                alarm.SnoozeTriggered = true;
+                alarm.HasTriggered = true;
+                continue;
+            }
+
+            alarm.HasTriggered = true;
+            alarm.SnoozeTriggered = false;
+            alarm.SnoozeCanceled = false;
+
+            if (!AlarmConfigurationService.ScheduleSnooze(alarm, nowUtc))
+                alarm.SnoozedUntilUtc = DateTime.MinValue;
         }
 
         if (changed)
@@ -209,27 +235,40 @@ public sealed class Plugin : IDalamudPlugin
 
     private void UpdateMaintenanceDetection(DateTime nowUtc)
     {
-        if (!Configuration.MaintenanceReminderEnabled)
-            return;
-
         if (maintenanceRefreshTask != null)
         {
             if (!maintenanceRefreshTask.IsCompleted)
                 return;
 
+            var wasManual = maintenanceRefreshRequestedManually;
             try
             {
-                ApplyMaintenanceRefreshResult(maintenanceRefreshTask.Result);
+                var maintenance = maintenanceRefreshTask.Result;
+                var result = ApplyMaintenanceRefreshResult(maintenance);
+                if (wasManual)
+                {
+                    Configuration.LastMaintenanceCheckStatus = result;
+                    Configuration.Save();
+                }
             }
             catch (Exception ex)
             {
                 log.Warning(ex, "Failed checking Lodestone maintenance news.");
+                if (wasManual)
+                {
+                    Configuration.LastMaintenanceCheckStatus = $"Maintenance check failed: {ex.Message}";
+                    Configuration.Save();
+                }
             }
             finally
             {
                 maintenanceRefreshTask = null;
+                maintenanceRefreshRequestedManually = false;
             }
         }
+
+        if (!Configuration.MaintenanceReminderEnabled)
+            return;
 
         if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalHours < 6)
             return;
@@ -238,22 +277,32 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
         Configuration.Save();
 
+        maintenanceRefreshRequestedManually = false;
         maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync(
+            Configuration.MaintenanceLanguage,
             Configuration.LastMaintenanceNewsUrl,
             Configuration.DetectedMaintenanceStartUtc);
     }
 
-    private void ApplyMaintenanceRefreshResult(LodestoneMaintenanceInfo? maintenance)
+    private string ApplyMaintenanceRefreshResult(LodestoneMaintenanceInfo? maintenance)
     {
+        Configuration.LastMaintenanceDetectionTimestampUtc = DateTime.UtcNow;
+
         if (maintenance == null)
-            return;
+        {
+            Configuration.Save();
+            return "No active or upcoming maintenance notice was found.";
+        }
 
         bool changed =
             !string.Equals(Configuration.LastMaintenanceNewsUrl, maintenance.Url, StringComparison.OrdinalIgnoreCase) ||
             Configuration.DetectedMaintenanceStartUtc != maintenance.StartUtc;
 
         if (!changed)
-            return;
+        {
+            Configuration.Save();
+            return "Maintenance checked. Latest detected maintenance is already current.";
+        }
 
         Configuration.LastMaintenanceNewsTitle = maintenance.Title;
         Configuration.LastMaintenanceNewsUrl = maintenance.Url;
@@ -262,8 +311,8 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.DetectedMaintenanceTimeZoneText = maintenance.TimeZoneText;
         Configuration.DetectedMaintenanceStartUtc = maintenance.StartUtc;
         Configuration.HasDetectedMaintenanceTime = true;
-        Configuration.LastMaintenanceDetectionTimestampUtc = DateTime.UtcNow;
         Configuration.Save();
+        return $"Maintenance notice found: {maintenance.Title}";
     }
 
     private void CheckMaintenanceReminder(DateTime nowUtc)
@@ -439,15 +488,44 @@ public sealed class Plugin : IDalamudPlugin
                 SaveAndNotify("Time format set to 24h.");
                 return;
 
+            case "12s":
+            case "12sec":
+            case "12seconds":
+                Configuration.TimeFormat = ClockTimeFormat.TwelveHourSeconds;
+                NormalizeAlarmEditorHourForNewFormat();
+                SaveAndNotify("Time format set to 12h with seconds.");
+                return;
+
+            case "24s":
+            case "24sec":
+            case "24seconds":
+                Configuration.TimeFormat = ClockTimeFormat.TwentyFourHourSeconds;
+                NormalizeAlarmEditorHourForNewFormat();
+                SaveAndNotify("Time format set to 24h with seconds.");
+                return;
+
+            case "weekday":
+            case "day":
+                Configuration.TimeFormat = ClockTimeFormat.WeekdayTwentyFourHour;
+                NormalizeAlarmEditorHourForNewFormat();
+                SaveAndNotify("Time format set to weekday + 24h.");
+                return;
+
+            case "date":
+                Configuration.TimeFormat = ClockTimeFormat.DateTwentyFourHour;
+                NormalizeAlarmEditorHourForNewFormat();
+                SaveAndNotify("Time format set to date + 24h.");
+                return;
+
             default:
-                chatGui.PrintError("Invalid format. Use 12 or 24.", "Clock");
+                chatGui.PrintError("Invalid format. Use 12, 24, 12s, 24s, weekday or date.", "Clock");
                 return;
         }
     }
 
     private void NormalizeAlarmEditorHourForNewFormat()
     {
-        if (Configuration.TimeFormat == ClockTimeFormat.TwelveHour)
+        if (TimeFormatHelper.UsesTwelveHourClock(Configuration.TimeFormat))
         {
             int sourceHour24;
 
@@ -633,7 +711,7 @@ public sealed class Plugin : IDalamudPlugin
         chatGui.Print("/clock settings - open settings", "Clock");
         chatGui.Print("/clockalarms or /alarms - open settings on the alarms tab", "Clock");
         chatGui.Print("/clock timezone <TimeZoneInfo ID or alias>", "Clock");
-        chatGui.Print("/clock format 12|24", "Clock");
+        chatGui.Print("/clock format 12|24|12s|24s|weekday|date", "Clock");
         chatGui.Print("/clock colon default|always|hidden|slow|fast", "Clock");
         chatGui.Print("/clock layout horizontal|vertical", "Clock");
         chatGui.Print("/clock preset classic|minimal|gold|retro", "Clock");
@@ -738,6 +816,34 @@ public sealed class Plugin : IDalamudPlugin
             error = ex.Message;
             return false;
         }
+    }
+
+    public bool IsMaintenanceRefreshRunning => maintenanceRefreshTask is { IsCompleted: false };
+
+    public bool RequestMaintenanceRefresh(bool forceRefresh)
+    {
+        if (maintenanceRefreshTask is { IsCompleted: false })
+            return false;
+
+        var nowUtc = DateTime.UtcNow;
+        lastMaintenanceRefreshStartUtc = nowUtc;
+        maintenanceRefreshRequestedManually = forceRefresh;
+        Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
+        Configuration.LastMaintenanceCheckStatus = forceRefresh ? "Checking Lodestone maintenance notices..." : Configuration.LastMaintenanceCheckStatus;
+        Configuration.Save();
+
+        maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync(
+            Configuration.MaintenanceLanguage,
+            Configuration.LastMaintenanceNewsUrl,
+            Configuration.DetectedMaintenanceStartUtc,
+            forceRefresh);
+
+        return true;
+    }
+
+    public void ClearRecentlyTriggeredAlarm(Guid alarmId)
+    {
+        recentlyTriggeredAlarmIds.Remove(alarmId);
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();

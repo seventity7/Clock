@@ -42,7 +42,10 @@ public static class AlarmConfigurationService
                 TimeZone = configuration.SelectedTimeZone,
                 TimeZoneId = configuration.SelectedTimeZoneId,
                 Enabled = configuration.CustomAlarmEnabled,
-                HasTriggered = false
+                HasTriggered = false,
+                SnoozedUntilUtc = DateTime.MinValue,
+                SnoozeCanceled = false,
+                SnoozeTriggered = false
             });
         }
 
@@ -59,7 +62,7 @@ public static class AlarmConfigurationService
             1,
             DateTime.DaysInMonth(zoneNow.Year, zoneNow.Month));
 
-        if (configuration.TimeFormat == ClockTimeFormat.TwelveHour)
+        if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
         {
             if (configuration.AlarmEditorHour <= 0 || configuration.AlarmEditorHour > 12)
             {
@@ -74,6 +77,7 @@ public static class AlarmConfigurationService
         }
 
         configuration.AlarmEditorMinute = Math.Clamp(configuration.AlarmEditorMinute, 0, 59);
+        configuration.AlarmEditorSnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes <= 0 ? 5 : configuration.AlarmEditorSnoozeMinutes, 1, 120);
     }
 
     public static void RefreshEditorDateForLocalDay(Configuration configuration, string editorTimeZoneId)
@@ -103,7 +107,12 @@ public static class AlarmConfigurationService
             Message = string.IsNullOrWhiteSpace(configuration.AlarmEditorMessage) ? "Alarm" : configuration.AlarmEditorMessage.Trim(),
             TimeZoneId = alarmTimeZoneId,
             Enabled = true,
-            HasTriggered = false
+            HasTriggered = false,
+            SnoozedUntilUtc = DateTime.MinValue,
+            SnoozeCanceled = false,
+            SnoozeTriggered = false,
+            SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled,
+            SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120)
         });
     }
 
@@ -122,6 +131,11 @@ public static class AlarmConfigurationService
         alarm.TimeZoneId = alarmTimeZoneId;
         alarm.Enabled = true;
         alarm.HasTriggered = false;
+        alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SnoozeCanceled = false;
+        alarm.SnoozeTriggered = false;
+        alarm.SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled;
+        alarm.SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120);
         return true;
     }
 
@@ -142,6 +156,9 @@ public static class AlarmConfigurationService
         alarm.DateTimeText = todayAlarm.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         alarm.Enabled = true;
         alarm.HasTriggered = false;
+        alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SnoozeCanceled = false;
+        alarm.SnoozeTriggered = false;
         return true;
     }
 
@@ -157,7 +174,7 @@ public static class AlarmConfigurationService
 
         int hour24;
 
-        if (configuration.TimeFormat == ClockTimeFormat.TwelveHour)
+        if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
         {
             var selectedHour12 = Math.Clamp(configuration.AlarmEditorHour, 1, 12);
             hour24 = selectedHour12 % 12;
@@ -176,6 +193,40 @@ public static class AlarmConfigurationService
     public static string BuildEditorDateTimeText(Configuration configuration)
     {
         return BuildEditorDateTimeText(configuration, configuration.SelectedTimeZoneId);
+    }
+
+    public static bool ScheduleSnooze(AlarmEntry alarm, DateTime baseUtc)
+    {
+        if (!alarm.SnoozeEnabled || alarm.SnoozeCanceled || alarm.SnoozeTriggered)
+            return false;
+
+        var snoozeMinutes = Math.Clamp(alarm.SnoozeMinutes <= 0 ? 5 : alarm.SnoozeMinutes, 1, 120);
+        alarm.SnoozedUntilUtc = baseUtc.AddMinutes(snoozeMinutes);
+        return true;
+    }
+
+    public static bool CancelSnooze(Configuration configuration, Guid alarmId)
+    {
+        var alarm = configuration.Alarms.FirstOrDefault(a => a.Id == alarmId);
+        if (alarm == null || alarm.SnoozedUntilUtc <= DateTime.MinValue || alarm.SnoozeTriggered)
+            return false;
+
+        alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SnoozeCanceled = true;
+        return true;
+    }
+
+    public static bool TryGetPendingTriggerUtc(AlarmEntry alarm, out DateTime triggerUtc)
+    {
+        triggerUtc = DateTime.MinValue;
+
+        if (alarm.SnoozedUntilUtc > DateTime.MinValue && !alarm.SnoozeTriggered)
+        {
+            triggerUtc = DateTime.SpecifyKind(alarm.SnoozedUntilUtc, DateTimeKind.Utc);
+            return true;
+        }
+
+        return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out triggerUtc);
     }
 
     public static void Remove(Configuration configuration, Guid alarmId)
