@@ -38,6 +38,7 @@ public class ConfigWindow : Window, IDisposable
     private readonly FileDialogManager fileDialogManager = new();
     private static readonly Vector4 GoldTextColor = new(1f, 0.82f, 0.42f, 1f);
     private string timeZoneFilter = "";
+    private string chatTimestampTimeZoneFilter = "";
     private string countryTimeZoneFilter = "";
     private CountryTimeZoneOption? selectedCountryTimeZone;
     private bool favoriteTimezonesExpanded = true;
@@ -328,6 +329,7 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
             Help(T("Hides only the clock during cutscenes."));
+
         });
 
         Section(T("Time Display"), () =>
@@ -345,6 +347,160 @@ public class ConfigWindow : Window, IDisposable
 
             DrawFavoriteTimezonesSection();
         });
+
+        Section(T("Chat Timestamp"), () =>
+        {
+            DrawChatTimestampSettings();
+        });
+    }
+
+
+    private void DrawChatTimestampSettings()
+    {
+        bool showCustomTimestamp = configuration.ShowCustomTimestampInChat;
+        if (ImGui.Checkbox(T("Show custom timestamp"), ref showCustomTimestamp))
+        {
+            configuration.ShowCustomTimestampInChat = showCustomTimestamp;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+
+        bool showAmPm = configuration.ChatTimestampShowAmPm;
+        if (ImGui.Checkbox(T("Show AM/PM"), ref showAmPm))
+        {
+            configuration.ChatTimestampShowAmPm = showAmPm;
+            configuration.Save();
+        }
+
+        ImGui.Indent();
+        if (!configuration.ShowCustomTimestampInChat)
+            ImGui.BeginDisabled();
+
+        bool matchChannelColor = configuration.ChatTimestampMatchChannelColor;
+        if (ImGui.Checkbox(T("Match channel color"), ref matchChannelColor))
+        {
+            configuration.ChatTimestampMatchChannelColor = matchChannelColor;
+            if (matchChannelColor)
+                configuration.ChatTimestampUseCustomColor = false;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+
+        bool useCustomColor = configuration.ChatTimestampUseCustomColor;
+        if (ImGui.Checkbox(T("Custom color"), ref useCustomColor))
+        {
+            configuration.ChatTimestampUseCustomColor = useCustomColor;
+            if (useCustomColor)
+                configuration.ChatTimestampMatchChannelColor = false;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(46f);
+        var timestampColor = configuration.ChatTimestampColor;
+        if (ImGui.ColorEdit4("##ChatTimestampColor", ref timestampColor, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel | ImGuiColorEditFlags.NoTooltip))
+        {
+            configuration.ChatTimestampColor = timestampColor;
+            configuration.ChatTimestampUseCustomColor = true;
+            configuration.ChatTimestampMatchChannelColor = false;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+        }
+
+        DrawTimestampTimezoneCombo();
+
+        if (!configuration.ShowCustomTimestampInChat)
+            ImGui.EndDisabled();
+        ImGui.Unindent();
+
+        Help(T("Disable \"Add time stamp to messages.\" from char config first"));
+    }
+
+    private void DrawTimestampTimezoneCombo()
+    {
+        ImGui.Text(T("Timestamp timezone"));
+        ImGui.SameLine();
+
+        var currentLabel = string.IsNullOrWhiteSpace(configuration.ChatTimestampTimeZoneId)
+            ? T("Local Time")
+            : TimeZoneHelper.GetComboLabel(configuration.ChatTimestampTimeZoneId);
+        var popupId = "ChatTimestampTimezonePopup";
+
+        if (ImGui.Button($"{currentLabel}  ▼##ChatTimestampTimezoneDropdownButton", new Vector2(260f, 0f)))
+            ImGui.OpenPopup(popupId);
+
+        var buttonMin = ImGui.GetItemRectMin();
+        var buttonMax = ImGui.GetItemRectMax();
+        var typedTimeZoneId = string.Empty;
+        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(chatTimestampTimeZoneFilter)
+            && TimeZoneHelper.TryResolveTimeZone(chatTimestampTimeZoneFilter, out typedTimeZoneId);
+
+        ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 360f : 320f), ImGuiCond.Always);
+
+        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        {
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputText("##ChatTimestampTimezoneFilter", ref chatTimestampTimeZoneFilter, 96);
+            ImGui.Separator();
+
+            bool localSelected = string.IsNullOrWhiteSpace(configuration.ChatTimestampTimeZoneId);
+            if (ImGui.Selectable(T("Local Time"), localSelected))
+            {
+                configuration.ChatTimestampTimeZoneId = string.Empty;
+                configuration.Save();
+                chatTimestampTimeZoneFilter = "";
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (localSelected)
+                ImGui.SetItemDefaultFocus();
+
+            ImGui.Separator();
+
+            if (hasTypedTimeZone)
+            {
+                bool typedSelected = string.Equals(configuration.ChatTimestampTimeZoneId, typedTimeZoneId, StringComparison.OrdinalIgnoreCase);
+                if (DrawTimeZoneSelectable(string.Format(CultureInfo.InvariantCulture, T("Use typed ID: {0}"), TimeZoneHelper.GetComboLabel(typedTimeZoneId)), typedSelected, typedTimeZoneId))
+                {
+                    configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(typedTimeZoneId);
+                    configuration.Save();
+                    chatTimestampTimeZoneFilter = "";
+                    ImGui.CloseCurrentPopup();
+                }
+
+                ImGui.Separator();
+            }
+
+            if (ImGui.BeginChild("##ChatTimestampTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            {
+                foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
+                {
+                    if (!TimeZoneHelper.MatchesFilter(timeZone, chatTimestampTimeZoneFilter))
+                        continue;
+
+                    bool selected = string.Equals(configuration.ChatTimestampTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    {
+                        configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                        configuration.Save();
+                        chatTimestampTimeZoneFilter = "";
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndChild();
+            ImGui.EndPopup();
+        }
     }
 
     private void DrawCompactTimezoneCombo()
@@ -376,7 +532,7 @@ public class ConfigWindow : Window, IDisposable
             if (hasTypedTimeZone)
             {
                 bool typedSelected = string.Equals(configuration.SelectedTimeZoneId, typedTimeZoneId, StringComparison.OrdinalIgnoreCase);
-                if (DrawTimeZoneSelectable($"Use typed ID: {TimeZoneHelper.GetComboLabel(typedTimeZoneId)}", typedSelected, typedTimeZoneId))
+                if (DrawTimeZoneSelectable(string.Format(CultureInfo.InvariantCulture, T("Use typed ID: {0}"), TimeZoneHelper.GetComboLabel(typedTimeZoneId)), typedSelected, typedTimeZoneId))
                 {
                     configuration.SelectedTimeZoneId = typedTimeZoneId;
                     configuration.Save();

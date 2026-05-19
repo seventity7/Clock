@@ -34,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IChatGui chatGui;
     private readonly IToastGui toastGui;
     private readonly LodestoneMaintenanceService maintenanceService = new();
+    private readonly ChatTimestampService chatTimestampService;
 
     private bool hasAutoStarted;
     private bool wantedMainWindowOpen;
@@ -59,7 +60,8 @@ public sealed class Plugin : IDalamudPlugin
         IClientState clientState,
         ICondition condition,
         IChatGui chatGui,
-        IToastGui toastGui)
+        IToastGui toastGui,
+        IDataManager dataManager)
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
@@ -79,6 +81,8 @@ public sealed class Plugin : IDalamudPlugin
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+
+        chatTimestampService = new ChatTimestampService(Configuration, chatGui, dataManager, log);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -115,6 +119,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration.Save();
 
+        chatTimestampService.Dispose();
         maintenanceService.Dispose();
 
         pluginInterface.UiBuilder.Draw -= DrawUI;

@@ -173,6 +173,12 @@ public partial class Configuration : IPluginConfiguration
     public bool IsConfigWindowMovable = true;
     public bool AutoStart = false;
     public bool HideDuringCutscenes = false;
+    public bool ShowCustomTimestampInChat = false;
+    public bool ChatTimestampMatchChannelColor = false;
+    public bool ChatTimestampUseCustomColor = true;
+    public bool ChatTimestampShowAmPm = true;
+    public Vector4 ChatTimestampColor = new(0.72f, 0.42f, 1.00f, 1.00f);
+    public string ChatTimestampTimeZoneId = "";
 
     // Legacy enum kept only so existing saved configs can migrate to SelectedTimeZoneId
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
@@ -248,6 +254,7 @@ public partial class Configuration : IPluginConfiguration
             FavoriteTimeZoneIds = new List<string>();
 
         EnsureConfigurationFeatureState();
+        SanitizeChatTimestampOptions();
 
         ActiveProfileIndex = Math.Clamp(ActiveProfileIndex, 0, Profiles.Count - 1);
 
@@ -266,7 +273,7 @@ public partial class Configuration : IPluginConfiguration
         if (string.IsNullOrWhiteSpace(UiLanguageCultureName))
             UiLanguageCultureName = "en-US";
 
-        Version = 19;
+        Version = 20;
     }
 
     private void MigrateTimeZones()
@@ -338,6 +345,23 @@ public partial class Configuration : IPluginConfiguration
 
         if (profile.LocalTimeIconBorderOpacity <= 0f)
             profile.LocalTimeIconBorderOpacity = profile.IconBorderOpacity;
+    }
+
+    public void SanitizeChatTimestampOptions()
+    {
+        ChatTimestampColor.X = Math.Clamp(ChatTimestampColor.X, 0f, 1f);
+        ChatTimestampColor.Y = Math.Clamp(ChatTimestampColor.Y, 0f, 1f);
+        ChatTimestampColor.Z = Math.Clamp(ChatTimestampColor.Z, 0f, 1f);
+        ChatTimestampColor.W = Math.Clamp(ChatTimestampColor.W, 0f, 1f);
+
+        if (ChatTimestampMatchChannelColor && ChatTimestampUseCustomColor)
+            ChatTimestampUseCustomColor = false;
+
+        if (!ChatTimestampMatchChannelColor && !ChatTimestampUseCustomColor)
+            ChatTimestampUseCustomColor = true;
+
+        if (!string.IsNullOrWhiteSpace(ChatTimestampTimeZoneId) && !TimeZoneHelper.TryResolveTimeZone(ChatTimestampTimeZoneId, out ChatTimestampTimeZoneId))
+            ChatTimestampTimeZoneId = string.Empty;
     }
 
     public ClockProfile GetActiveProfile()
