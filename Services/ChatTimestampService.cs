@@ -35,7 +35,22 @@ public sealed unsafe class ChatTimestampService : IDisposable
         // Reuse the same native string instead of allocating one every time a chat line is formatted.
         cachedTimestampText = Utf8String.FromString(string.Empty);
 
-        formatTextHook?.Enable();
+        ApplyConfiguration();
+    }
+
+
+    public void ApplyConfiguration()
+    {
+        config.SanitizeChatTimestampOptions();
+
+        if (config.ShowCustomTimestampInChat)
+        {
+            formatTextHook?.Enable();
+        }
+        else
+        {
+            formatTextHook?.Disable();
+        }
     }
 
     public void Dispose()
