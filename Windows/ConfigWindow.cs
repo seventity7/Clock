@@ -377,7 +377,7 @@ public class ConfigWindow : Window, IDisposable
         if (hovered)
         {
             ImGui.BeginTooltip();
-            ImGui.TextUnformatted(T("Recommended to turn off any similar feature"));
+            ImGui.TextUnformatted(T("Recommend to turn off any similar feature"));
             ImGui.TextUnformatted(T("from other plugins to avoid any issues."));
             ImGui.EndTooltip();
         }
@@ -392,6 +392,7 @@ public class ConfigWindow : Window, IDisposable
             configuration.ShowCustomTimestampInChat = showCustomTimestamp;
             configuration.SanitizeChatTimestampOptions();
             configuration.Save();
+            plugin.RefreshChatTimestampSettings();
         }
 
         ImGui.SameLine();
@@ -401,6 +402,7 @@ public class ConfigWindow : Window, IDisposable
         {
             configuration.ChatTimestampShowAmPm = showAmPm;
             configuration.Save();
+            plugin.RefreshChatTimestampSettings();
         }
 
         ImGui.Indent();
@@ -413,6 +415,7 @@ public class ConfigWindow : Window, IDisposable
             configuration.ChatTimestampUseCustomColor = useCustomColor;
             configuration.SanitizeChatTimestampOptions();
             configuration.Save();
+            plugin.RefreshChatTimestampSettings();
         }
 
         ImGui.SameLine();
@@ -424,10 +427,11 @@ public class ConfigWindow : Window, IDisposable
             configuration.ChatTimestampUseCustomColor = true;
             configuration.SanitizeChatTimestampOptions();
             configuration.Save();
+            plugin.RefreshChatTimestampSettings();
         }
 
         DrawTimestampTimezoneCombo();
-        Help(T("Enable \"Add timestamp to messages.\" in char config to work"));
+        Help(T("Enable \"Add time stamp to messages.\" in char config to work"));
 
         if (!configuration.ShowCustomTimestampInChat)
             ImGui.EndDisabled();
@@ -468,6 +472,7 @@ public class ConfigWindow : Window, IDisposable
             {
                 configuration.ChatTimestampTimeZoneId = string.Empty;
                 configuration.Save();
+                plugin.RefreshChatTimestampSettings();
                 chatTimestampTimeZoneFilter = "";
                 ImGui.CloseCurrentPopup();
             }
@@ -484,6 +489,7 @@ public class ConfigWindow : Window, IDisposable
                 {
                     configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(typedTimeZoneId);
                     configuration.Save();
+                    plugin.RefreshChatTimestampSettings();
                     chatTimestampTimeZoneFilter = "";
                     ImGui.CloseCurrentPopup();
                 }
@@ -503,6 +509,7 @@ public class ConfigWindow : Window, IDisposable
                     {
                         configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
                         configuration.Save();
+                        plugin.RefreshChatTimestampSettings();
                         chatTimestampTimeZoneFilter = "";
                         ImGui.CloseCurrentPopup();
                     }
@@ -769,6 +776,7 @@ public class ConfigWindow : Window, IDisposable
                 {
                     configuration.TimeFormat = (ClockTimeFormat)i;
                     configuration.Save();
+                    plugin.RefreshChatTimestampSettings();
                 }
 
                 if (selected)

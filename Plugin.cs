@@ -117,6 +117,12 @@ public sealed class Plugin : IDalamudPlugin
 
     }
 
+
+    public void RefreshChatTimestampSettings()
+    {
+        chatTimestampService.ApplyConfiguration();
+    }
+
     public void Dispose()
     {
         Configuration.Save();
