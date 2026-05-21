@@ -50,6 +50,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public readonly WindowSystem WindowSystem = new("Clock");
 
+    public IDalamudPluginInterface PluginInterface => pluginInterface;
+
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
 
@@ -61,7 +63,7 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IChatGui chatGui,
         IToastGui toastGui,
-        IDataManager dataManager)
+        IGameInteropProvider gameInteropProvider)
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
@@ -82,7 +84,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
 
-        chatTimestampService = new ChatTimestampService(Configuration, chatGui, dataManager, log);
+        chatTimestampService = new ChatTimestampService(Configuration, gameInteropProvider, log);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {

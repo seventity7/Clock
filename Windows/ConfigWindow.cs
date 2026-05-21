@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
 using Clock.Services;
@@ -23,8 +24,6 @@ public class ConfigWindow : Window, IDisposable
     private readonly Plugin plugin;
     private readonly Configuration configuration;
 
-    private bool isEditingTextSize;
-    private bool focusTextSizeInput;
     private float textSizeInputValue;
     private string? editingSliderId;
     private float editingSliderValue;
@@ -351,7 +350,37 @@ public class ConfigWindow : Window, IDisposable
         Section(T("Chat Timestamp"), () =>
         {
             DrawChatTimestampSettings();
-        });
+        }, DrawChatTimestampHeaderRight);
+    }
+
+
+    private void DrawChatTimestampHeaderRight()
+    {
+        var infoIcon = FontAwesomeIcon.Question.ToIconString();
+        var startX = ImGui.GetCursorPosX();
+        var contentMaxX = ImGui.GetContentRegionMax().X;
+        bool hovered;
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            var iconSize = ImGui.CalcTextSize(infoIcon);
+            ImGui.SetCursorPosX(Math.Max(startX, contentMaxX - iconSize.X));
+
+            var iconMin = ImGui.GetCursorScreenPos();
+            var iconMax = iconMin + iconSize;
+            hovered = ImGui.IsMouseHoveringRect(iconMin, iconMax);
+            var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+
+            ImGui.TextColored(hovered ? GoldTextColor : disabledColor, infoIcon);
+        }
+
+        if (hovered)
+        {
+            ImGui.BeginTooltip();
+            ImGui.TextUnformatted(T("Recommended to turn off any similar feature"));
+            ImGui.TextUnformatted(T("from other plugins to avoid any issues."));
+            ImGui.EndTooltip();
+        }
     }
 
 
@@ -378,24 +407,10 @@ public class ConfigWindow : Window, IDisposable
         if (!configuration.ShowCustomTimestampInChat)
             ImGui.BeginDisabled();
 
-        bool matchChannelColor = configuration.ChatTimestampMatchChannelColor;
-        if (ImGui.Checkbox(T("Match channel color"), ref matchChannelColor))
-        {
-            configuration.ChatTimestampMatchChannelColor = matchChannelColor;
-            if (matchChannelColor)
-                configuration.ChatTimestampUseCustomColor = false;
-            configuration.SanitizeChatTimestampOptions();
-            configuration.Save();
-        }
-
-        ImGui.SameLine();
-
         bool useCustomColor = configuration.ChatTimestampUseCustomColor;
         if (ImGui.Checkbox(T("Custom color"), ref useCustomColor))
         {
             configuration.ChatTimestampUseCustomColor = useCustomColor;
-            if (useCustomColor)
-                configuration.ChatTimestampMatchChannelColor = false;
             configuration.SanitizeChatTimestampOptions();
             configuration.Save();
         }
@@ -407,18 +422,17 @@ public class ConfigWindow : Window, IDisposable
         {
             configuration.ChatTimestampColor = timestampColor;
             configuration.ChatTimestampUseCustomColor = true;
-            configuration.ChatTimestampMatchChannelColor = false;
             configuration.SanitizeChatTimestampOptions();
             configuration.Save();
         }
 
         DrawTimestampTimezoneCombo();
+        Help(T("Enable \"Add timestamp to messages.\" in char config to work"));
 
         if (!configuration.ShowCustomTimestampInChat)
             ImGui.EndDisabled();
         ImGui.Unindent();
 
-        Help(T("Disable \"Add time stamp to messages.\" from char config first"));
     }
 
     private void DrawTimestampTimezoneCombo()
@@ -1965,10 +1979,15 @@ public class ConfigWindow : Window, IDisposable
         return changed;
     }
 
-    private void Section(string title, Action drawContent)
+    private void Section(string title, Action drawContent, Action? drawTitleRight = null)
     {
         ImGui.Spacing();
         ImGui.TextColored(new Vector4(1f, 0.82f, 0.42f, 1f), title);
+        if (drawTitleRight != null)
+        {
+            ImGui.SameLine();
+            drawTitleRight();
+        }
         ImGui.Separator();
         ImGui.Spacing();
         drawContent();

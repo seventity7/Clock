@@ -174,7 +174,6 @@ public partial class Configuration : IPluginConfiguration
     public bool AutoStart = false;
     public bool HideDuringCutscenes = false;
     public bool ShowCustomTimestampInChat = false;
-    public bool ChatTimestampMatchChannelColor = false;
     public bool ChatTimestampUseCustomColor = true;
     public bool ChatTimestampShowAmPm = true;
     public Vector4 ChatTimestampColor = new(0.72f, 0.42f, 1.00f, 1.00f);
@@ -354,11 +353,6 @@ public partial class Configuration : IPluginConfiguration
         ChatTimestampColor.Z = Math.Clamp(ChatTimestampColor.Z, 0f, 1f);
         ChatTimestampColor.W = Math.Clamp(ChatTimestampColor.W, 0f, 1f);
 
-        if (ChatTimestampMatchChannelColor && ChatTimestampUseCustomColor)
-            ChatTimestampUseCustomColor = false;
-
-        if (!ChatTimestampMatchChannelColor && !ChatTimestampUseCustomColor)
-            ChatTimestampUseCustomColor = true;
 
         if (!string.IsNullOrWhiteSpace(ChatTimestampTimeZoneId) && !TimeZoneHelper.TryResolveTimeZone(ChatTimestampTimeZoneId, out ChatTimestampTimeZoneId))
             ChatTimestampTimeZoneId = string.Empty;

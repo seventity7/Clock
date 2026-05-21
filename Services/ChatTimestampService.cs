@@ -1,165 +1,130 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Numerics;
-using System.Text.RegularExpressions;
-using Dalamud.Game.Chat;
-using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
+using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
-using Dalamud.Utility;
+using Dalamud.Utility.Signatures;
+using FFXIVClientStructs.FFXIV.Client.System.String;
+using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 
 namespace Clock.Services;
 
-public sealed class ChatTimestampService : IDisposable
+// code rewrited to avoid compatibility issues from the old code idea. Nothing hard-coded just native system.
+public sealed unsafe class ChatTimestampService : IDisposable
 {
-    private static readonly Regex LeadingTimestampRegex = new(
-        @"^\s*(?<stamp>(?:\[[0-2]?\d:[0-5]\d(?::[0-5]\d)?(?:\s?[AP]M)?\]\s?)|(?:[0-2]?\d:[0-5]\d(?::[0-5]\d)?(?:\s?[AP]M)?\s?))",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private delegate byte* ApplyTextFormatDelegate(RaptureTextModule* raptureTextModule, uint addonTextId, int value);
 
-    private readonly Configuration configuration;
-    private readonly IChatGui chatGui;
-    private readonly IPluginLog log;
+    private readonly Configuration config;
+    private readonly IPluginLog pluginLog;
 
-    public ChatTimestampService(Configuration configuration, IChatGui chatGui, IDataManager dataManager, IPluginLog log)
+    // Native timestamp formatter used by the game. The signature is a little odd,
+    // but keeping it here makes it easier to compare with the client code later.
+    [Signature("E9 ?? ?? ?? ?? 7D 20", DetourName = nameof(OnFormatText))]
+    private Hook<ApplyTextFormatDelegate>? formatTextHook;
+
+    private Utf8String* cachedTimestampText;
+
+    public ChatTimestampService(Configuration configuration, IGameInteropProvider interopProvider, IPluginLog log)
     {
-        this.configuration = configuration;
-        this.chatGui = chatGui;
-        this.log = log;
+        config = configuration;
+        pluginLog = log;
 
-        this.chatGui.CheckMessageHandled += OnCheckMessageHandled;
+        interopProvider.InitializeFromAttributes(this);
+
+        // Reuse the same native string instead of allocating one every time a chat line is formatted.
+        cachedTimestampText = Utf8String.FromString(string.Empty);
+
+        formatTextHook?.Enable();
     }
 
     public void Dispose()
     {
-        chatGui.CheckMessageHandled -= OnCheckMessageHandled;
+        formatTextHook?.Dispose();
+        formatTextHook = null;
     }
 
-    private void OnCheckMessageHandled(IHandleableChatMessage message)
+    private byte* OnFormatText(RaptureTextModule* textModule, uint addonTextId, int unixTimestamp)
     {
-        if (!configuration.ShowCustomTimestampInChat)
-            return;
+        var isChatTimestamp = addonTextId is 7840 or 7841;
+
+        if (!isChatTimestamp || cachedTimestampText == null || !config.ShowCustomTimestampInChat)
+            return formatTextHook!.Original(textModule, addonTextId, unixTimestamp);
 
         try
         {
-            configuration.SanitizeChatTimestampOptions();
-            RemoveExistingTimestamp(message);
-            AddTimestamp(message);
+            // Make sure any values coming from the config UI are sane before touching native strings.
+            config.SanitizeChatTimestampOptions();
+            // Had to remove old option `Match Channel Colors` and leave just `Custom Color.
+
+            var messageTime = DateTimeOffset.FromUnixTimeSeconds(unixTimestamp);
+            var timestampText = MakeTimestampText(messageTime);
+
+            var payloadBuilder = new Lumina.Text.SeStringBuilder();
+
+            // Slightly verbose on purpose; this makes the color wrapping easier to read at a glance.
+            var shouldTintTimestamp = config.ChatTimestampUseCustomColor;
+            if (shouldTintTimestamp)
+            {
+                var safeColor = ClampTimestampColor(config.ChatTimestampColor);
+                payloadBuilder.PushColorRgba(safeColor);
+            }
+
+            payloadBuilder.Append(timestampText);
+
+            if (shouldTintTimestamp)
+                payloadBuilder.PopColor();
+
+            cachedTimestampText->SetString(payloadBuilder.GetViewAsSpan());
+            return cachedTimestampText->StringPtr;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Failed to add custom chat timestamp.");
+            // If anything goes wrong, fall back to the game's formatter rather than breaking chat.
+            pluginLog.Warning(ex, "Could not apply the custom chat timestamp format.");
+            return formatTextHook!.Original(textModule, addonTextId, unixTimestamp);
         }
     }
 
-    private static void RemoveExistingTimestamp(IHandleableChatMessage message)
+    private string MakeTimestampText(DateTimeOffset originalTime)
     {
-        RemoveLeadingTimestamp(message.Sender.Payloads);
-        RemoveLeadingTimestamp(message.Message.Payloads);
+        var adjustedTime = ConvertToConfiguredTimeZone(originalTime);
+        var timestampFormat = GetChatTimestampFormat();
+
+        return adjustedTime.ToString(timestampFormat, CultureInfo.InvariantCulture);
     }
 
-    private static void RemoveLeadingTimestamp(IList<Payload> payloads)
+    private DateTime ConvertToConfiguredTimeZone(DateTimeOffset originalTime)
     {
-        for (var i = 0; i < payloads.Count; i++)
-        {
-            if (IsTimestampFormattingPayload(payloads[i]))
-                continue;
+        if (string.IsNullOrWhiteSpace(config.ChatTimestampTimeZoneId))
+            return originalTime.LocalDateTime;
 
-            if (payloads[i] is not TextPayload textPayload || string.IsNullOrEmpty(textPayload.Text))
-                return;
+        var selectedTimeZone = TimeZoneHelper.GetTimeZone(config.ChatTimestampTimeZoneId);
+        var utcTime = originalTime.UtcDateTime;
 
-            var match = LeadingTimestampRegex.Match(textPayload.Text);
-            if (!match.Success)
-                return;
-
-            var afterStart = match.Index + match.Groups["stamp"].Value.Length;
-            var after = textPayload.Text[afterStart..].TrimStart();
-
-            while (i > 0 && IsTimestampFormattingPayload(payloads[i - 1]))
-            {
-                payloads.RemoveAt(i - 1);
-                i--;
-            }
-
-            while (i + 1 < payloads.Count && IsTimestampFormattingPayload(payloads[i + 1]))
-                payloads.RemoveAt(i + 1);
-
-            if (string.IsNullOrEmpty(after))
-                payloads.RemoveAt(i);
-            else
-                payloads[i] = new TextPayload(after);
-
-            return;
-        }
+        return TimeZoneInfo.ConvertTimeFromUtc(utcTime, selectedTimeZone);
     }
 
-    private static bool IsTimestampFormattingPayload(Payload payload)
+    private string GetChatTimestampFormat()
     {
-        return payload is UIForegroundPayload or RawPayload;
+        var usingTwelveHourClock = TimeFormatHelper.UsesTwelveHourClock(config.TimeFormat);
+
+        // C# format strings are picky, so keeping the pieces separate helps avoid silly mistakes again
+        var hourPart = usingTwelveHourClock ? "hh" : "HH";
+        var amPmPart = config.ChatTimestampShowAmPm ? " tt" : string.Empty;
+
+        return $"[{hourPart}:mm{amPmPart}]";
     }
 
-    private void AddTimestamp(IHandleableChatMessage message)
+    private static Vector4 ClampTimestampColor(Vector4 rawColor)
     {
-        var timestamp = BuildTimestamp();
-        var insertIntoSender = !string.IsNullOrWhiteSpace(message.Sender.TextValue);
-        var payloads = BuildTimestampPayloads(timestamp);
+        var red = Math.Clamp(rawColor.X, 0f, 1f);
+        var green = Math.Clamp(rawColor.Y, 0f, 1f);
+        var blue = Math.Clamp(rawColor.Z, 0f, 1f);
 
-        if (insertIntoSender)
-            message.Sender.Payloads.InsertRange(0, payloads);
-        else
-            message.Message.Payloads.InsertRange(0, payloads);
-    }
+        // Note for me: Alpha zero usually means "not configured" in this settings, so treat it as visible.
+        var alpha = rawColor.W <= 0f ? 1f : rawColor.W;
+        alpha = Math.Clamp(alpha, 0f, 1f);
 
-    private List<Payload> BuildTimestampPayloads(string text)
-    {
-        if (configuration.ChatTimestampMatchChannelColor)
-            return new List<Payload> { new TextPayload(text) };
-
-        var color = ToBgraMacroColor(configuration.ChatTimestampColor);
-        var macroString = $"<color(0x{color:X8})>{text}<color(stackcolor)>";
-        return new SeStringBuilder()
-            .AppendMacroString(macroString)
-            .Build()
-            .Payloads
-            .ToList();
-    }
-
-    private string BuildTimestamp()
-    {
-        var time = GetTimestampTime();
-        var format = configuration.TimeFormat switch
-        {
-            ClockTimeFormat.TwelveHour or ClockTimeFormat.TwelveHourSeconds => "h:mm",
-            _ => "HH:mm"
-        };
-
-        if (configuration.ChatTimestampShowAmPm)
-            format += " tt";
-
-        return $"[{time.ToString(format, CultureInfo.InvariantCulture)}] ";
-    }
-
-    private DateTime GetTimestampTime()
-    {
-        var utcNow = DateTime.UtcNow;
-        return string.IsNullOrWhiteSpace(configuration.ChatTimestampTimeZoneId)
-            ? DateTime.Now
-            : TimeZoneHelper.ConvertFromUtc(utcNow, configuration.ChatTimestampTimeZoneId);
-    }
-
-    private static uint ToBgraMacroColor(Vector4 color)
-    {
-        byte r = ToByte(color.X);
-        byte g = ToByte(color.Y);
-        byte b = ToByte(color.Z);
-        byte a = ToByte(color.W <= 0f ? 1f : color.W);
-
-        return ((uint)a << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
-    }
-
-    private static byte ToByte(float value)
-    {
-        return (byte)Math.Clamp((int)MathF.Round(value * 255f), 0, 255);
+        return new Vector4(red, green, blue, alpha);
     }
 }
