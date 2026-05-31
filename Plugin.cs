@@ -309,13 +309,12 @@ public sealed class Plugin : IDalamudPlugin
 
         bool changed =
             !string.Equals(Configuration.LastMaintenanceNewsUrl, maintenance.Url, StringComparison.OrdinalIgnoreCase) ||
-            Configuration.DetectedMaintenanceStartUtc != maintenance.StartUtc;
-
-        if (!changed)
-        {
-            Configuration.Save();
-            return "Maintenance checked. Latest detected maintenance is already current.";
-        }
+            !string.Equals(Configuration.LastMaintenanceNewsTitle, maintenance.Title, StringComparison.Ordinal) ||
+            !string.Equals(Configuration.DetectedMaintenanceDateTimeText, maintenance.LocalStartText, StringComparison.Ordinal) ||
+            !string.Equals(Configuration.DetectedMaintenanceTimeZoneText, maintenance.TimeZoneText, StringComparison.Ordinal) ||
+            !string.Equals(Configuration.LastDetectedMaintenanceMessage, maintenance.BuildSummary(), StringComparison.Ordinal) ||
+            Configuration.DetectedMaintenanceStartUtc != maintenance.StartUtc ||
+            !Configuration.HasDetectedMaintenanceTime;
 
         Configuration.LastMaintenanceNewsTitle = maintenance.Title;
         Configuration.LastMaintenanceNewsUrl = maintenance.Url;
@@ -325,7 +324,10 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.DetectedMaintenanceStartUtc = maintenance.StartUtc;
         Configuration.HasDetectedMaintenanceTime = true;
         Configuration.Save();
-        return $"Maintenance notice found: {maintenance.Title}";
+
+        return changed
+            ? $"Maintenance notice found: {maintenance.Title}"
+            : string.Format(CultureInfo.InvariantCulture, "Maintenance checked. Latest detected maintenance is already current: {0}.", $"{maintenance.LocalStartText} {maintenance.TimeZoneText}");
     }
 
     private void CheckMaintenanceReminder(DateTime nowUtc)
@@ -373,14 +375,15 @@ public sealed class Plugin : IDalamudPlugin
         triggeredMaintenanceKeys.Add(key);
 
         var leadText = lead.TotalHours >= 1
-            ? (Math.Abs(lead.TotalHours - 24) < 0.01 ? "24 hours" : $"{lead.TotalHours:0} hour")
-            : $"{lead.TotalMinutes:0} minutes";
+            ? (Math.Abs(lead.TotalHours - 24) < 0.01 ? T("24 hours") : T("1 hour"))
+            : T("15 minutes");
 
         var zoneText = string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceTimeZoneText)
             ? TimeZoneHelper.ToShortText(Configuration.SelectedTimeZoneId)
             : Configuration.DetectedMaintenanceTimeZoneText;
 
-        var message = $"Scheduled maintenance starts in {leadText}. ({Configuration.DetectedMaintenanceDateTimeText} {zoneText})";
+        var whenText = $"{Configuration.DetectedMaintenanceDateTimeText} {zoneText}";
+        var message = string.Format(CultureInfo.InvariantCulture, T("Scheduled maintenance starts in {0}. ({1})"), leadText, whenText);
         chatGui.Print(message, "Clock");
         toastGui.ShowQuest(message, new QuestToastOptions
         {
@@ -829,6 +832,11 @@ public sealed class Plugin : IDalamudPlugin
             error = ex.Message;
             return false;
         }
+    }
+
+    private string T(string text)
+    {
+        return ClockLocalizationService.Translate(Configuration.UiLanguageCultureName, text);
     }
 
     public bool IsMaintenanceRefreshRunning => maintenanceRefreshTask is { IsCompleted: false };

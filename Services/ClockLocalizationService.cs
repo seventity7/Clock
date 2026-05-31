@@ -124,6 +124,11 @@ public static class ClockLocalizationService
             ["Checking Lodestone maintenance notices..."] = "Verificando avisos de manutenção do Lodestone...",
             ["No active or upcoming maintenance notice was found."] = "Nenhum aviso de manutenção ativo ou futuro foi encontrado.",
             ["Maintenance checked. Latest detected maintenance is already current."] = "Manutenção verificada. A manutenção detectada já está atualizada.",
+            ["Maintenance checked. Latest detected maintenance is already current: {0}."] = "Manutenção verificada. A manutenção detectada já está atualizada: {0}.",
+            ["Scheduled maintenance starts in {0}. ({1})"] = "A manutenção programada começa em {0}. ({1})",
+            ["24 hours"] = "24 horas",
+            ["1 hour"] = "1 hora",
+            ["15 minutes"] = "15 minutos",
             ["Maintenance check failed: {0}"] = "Falha ao verificar manutenção: {0}",
             ["Maintenance notice found: {0}"] = "Aviso de manutenção encontrado: {0}",
             ["24 hours before"] = "24 horas antes",
@@ -317,6 +322,11 @@ public static class ClockLocalizationService
             ["Checking Lodestone maintenance notices..."] = "Vérification des avis de maintenance du Lodestone...",
             ["No active or upcoming maintenance notice was found."] = "Aucun avis de maintenance actif ou à venir trouvé.",
             ["Maintenance checked. Latest detected maintenance is already current."] = "Maintenance vérifiée. La dernière maintenance détectée est déjà à jour.",
+            ["Maintenance checked. Latest detected maintenance is already current: {0}."] = "Maintenance vérifiée. La dernière maintenance détectée est déjà à jour : {0}.",
+            ["Scheduled maintenance starts in {0}. ({1})"] = "La maintenance programmée commence dans {0}. ({1})",
+            ["24 hours"] = "24 heures",
+            ["1 hour"] = "1 heure",
+            ["15 minutes"] = "15 minutes",
             ["Maintenance check failed: {0}"] = "Échec de la vérification de maintenance : {0}",
             ["Maintenance notice found: {0}"] = "Avis de maintenance trouvé : {0}",
             ["24 hours before"] = "24 heures avant",
@@ -510,6 +520,11 @@ public static class ClockLocalizationService
             ["Checking Lodestone maintenance notices..."] = "Prüfe Lodestone-Wartungshinweise...",
             ["No active or upcoming maintenance notice was found."] = "Keine aktive oder bevorstehende Wartung gefunden.",
             ["Maintenance checked. Latest detected maintenance is already current."] = "Wartung geprüft. Die zuletzt erkannte Wartung ist bereits aktuell.",
+            ["Maintenance checked. Latest detected maintenance is already current: {0}."] = "Wartung geprüft. Die zuletzt erkannte Wartung ist bereits aktuell: {0}.",
+            ["Scheduled maintenance starts in {0}. ({1})"] = "Die geplante Wartung beginnt in {0}. ({1})",
+            ["24 hours"] = "24 Stunden",
+            ["1 hour"] = "1 Stunde",
+            ["15 minutes"] = "15 Minuten",
             ["Maintenance check failed: {0}"] = "Wartungsprüfung fehlgeschlagen: {0}",
             ["Maintenance notice found: {0}"] = "Wartungshinweis gefunden: {0}",
             ["24 hours before"] = "24 Stunden vorher",
@@ -703,6 +718,11 @@ public static class ClockLocalizationService
             ["Checking Lodestone maintenance notices..."] = "Lodestoneのメンテナンス告知を確認中...",
             ["No active or upcoming maintenance notice was found."] = "現在または今後のメンテナンス告知は見つかりませんでした。",
             ["Maintenance checked. Latest detected maintenance is already current."] = "確認完了。検出済みの最新メンテナンスはすでに最新です。",
+            ["Maintenance checked. Latest detected maintenance is already current: {0}."] = "確認完了。検出済みの最新メンテナンスはすでに最新です: {0}。",
+            ["Scheduled maintenance starts in {0}. ({1})"] = "予定メンテナンスは{0}後に開始します。({1})",
+            ["24 hours"] = "24時間",
+            ["1 hour"] = "1時間",
+            ["15 minutes"] = "15分",
             ["Maintenance check failed: {0}"] = "メンテナンス確認に失敗しました: {0}",
             ["Maintenance notice found: {0}"] = "メンテナンス告知を検出: {0}",
             ["24 hours before"] = "24時間前",
@@ -821,6 +841,11 @@ public static class ClockLocalizationService
 
         if (table.TryGetValue(text, out var translated))
             return translated;
+
+        const string currentPrefix = "Maintenance checked. Latest detected maintenance is already current: ";
+        if (text.StartsWith(currentPrefix, StringComparison.Ordinal) && text.EndsWith(".", StringComparison.Ordinal) &&
+            table.TryGetValue("Maintenance checked. Latest detected maintenance is already current: {0}.", out var currentTemplate))
+            return string.Format(currentTemplate, text[currentPrefix.Length..^1]);
 
         const string failurePrefix = "Maintenance check failed: ";
         if (text.StartsWith(failurePrefix, StringComparison.Ordinal) && table.TryGetValue("Maintenance check failed: {0}", out var failureTemplate))

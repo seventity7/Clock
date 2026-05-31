@@ -110,23 +110,28 @@ public sealed class LodestoneMaintenanceService : IDisposable
     {
         var maintenanceNewsUri = GetMaintenanceNewsUri(language);
         var indexHtml = await httpClient.GetStringAsync(maintenanceNewsUri, cancellationToken).ConfigureAwait(false);
-        var detailUrl = ExtractFirstDetailUrl(indexHtml, maintenanceNewsUri);
-        if (string.IsNullOrWhiteSpace(detailUrl))
+        var detailUrls = ExtractDetailUrls(indexHtml, maintenanceNewsUri);
+        if (detailUrls.Count == 0)
             return null;
 
         var nowUtc = DateTime.UtcNow;
-        if (!forceRefresh && !string.IsNullOrWhiteSpace(cachedUrl) &&
-            string.Equals(cachedUrl, detailUrl, StringComparison.OrdinalIgnoreCase) &&
-            cachedStartUtc > nowUtc.AddMinutes(-30))
+        foreach (var detailUrl in detailUrls)
         {
-            return null;
+            var html = await httpClient.GetStringAsync(detailUrl, cancellationToken).ConfigureAwait(false);
+            if (!TryParseMaintenancePage(html, detailUrl, language, nowUtc, out var maintenance))
+                continue;
+
+            if (!forceRefresh && !string.IsNullOrWhiteSpace(cachedUrl) &&
+                string.Equals(cachedUrl, detailUrl, StringComparison.OrdinalIgnoreCase) &&
+                cachedStartUtc > nowUtc.AddMinutes(-30))
+            {
+                return null;
+            }
+
+            return maintenance;
         }
 
-        var html = await httpClient.GetStringAsync(detailUrl, cancellationToken).ConfigureAwait(false);
-        if (!TryParseMaintenancePage(html, detailUrl, language, nowUtc, out var maintenance))
-            return null;
-
-        return maintenance;
+        return null;
     }
 
     public static string GetLanguageName(LodestoneMaintenanceLanguage language)
@@ -153,8 +158,9 @@ public sealed class LodestoneMaintenanceService : IDisposable
         });
     }
 
-    private static string? ExtractFirstDetailUrl(string html, Uri maintenanceNewsUri)
+    private static List<string> ExtractDetailUrls(string html, Uri maintenanceNewsUri)
     {
+        var urls = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (Match match in DetailLinkRegex.Matches(html))
@@ -165,10 +171,10 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
             var url = new Uri(maintenanceNewsUri, path).ToString();
             if (seen.Add(url))
-                return url;
+                urls.Add(url);
         }
 
-        return null;
+        return urls;
     }
 
     private static bool TryParseMaintenancePage(
@@ -182,7 +188,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
 
         var text = NormalizeHtmlText(html);
         var title = ExtractTitle(html);
-        if (ShouldSkipTitleOrText(title, text))
+        if (ShouldSkipTitleOrText(title, text) || !LooksLikeGameMaintenanceNotice(title, text, language))
             return false;
 
         var dateSection = ExtractDateSection(text, language);
@@ -191,7 +197,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
             return false;
 
         var zoneText = match.Groups["zone"].Value.ToUpperInvariant();
-        if (!TryGetLodestoneTimeZone(zoneText, out var timeZone))
+        if (!TryGetLodestoneTimeZone(zoneText, out var timeZone, out var fixedZoneOffset))
             return false;
 
         if (!TryBuildLocalDateTime(match, "start", out var localStart))
@@ -207,8 +213,8 @@ public sealed class LodestoneMaintenanceService : IDisposable
                 localEnd = localEnd.AddDays(1);
         }
 
-        var startUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localStart, DateTimeKind.Unspecified), timeZone);
-        var endUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localEnd, DateTimeKind.Unspecified), timeZone);
+        var startUtc = ConvertLodestoneLocalToUtc(localStart, timeZone, fixedZoneOffset);
+        var endUtc = ConvertLodestoneLocalToUtc(localEnd, timeZone, fixedZoneOffset);
 
         if (endUtc < nowUtc.AddMinutes(-30))
             return false;
@@ -222,6 +228,71 @@ public sealed class LodestoneMaintenanceService : IDisposable
             endUtc);
 
         return true;
+    }
+
+
+    private static bool LooksLikeGameMaintenanceNotice(string title, string text, LodestoneMaintenanceLanguage language)
+    {
+        var titleKey = RemoveDiacritics(title).ToLowerInvariant();
+        if (titleKey.Contains("lodestone maintenance") ||
+            titleKey.Contains("companion app maintenance") ||
+            titleKey.Contains("online store maintenance") ||
+            titleKey.Contains("mog station maintenance"))
+        {
+            return false;
+        }
+
+        var affected = ExtractAffectedServiceSection(text, language);
+        if (string.IsNullOrWhiteSpace(affected))
+            return titleKey.Contains("all worlds") || title.Contains("全ワールド", StringComparison.Ordinal);
+
+        var key = RemoveDiacritics(affected).ToLowerInvariant();
+        return key.Contains("final fantasy xiv") ||
+               key.Contains("all worlds") ||
+               affected.Contains("ファイナルファンタジーXIV", StringComparison.Ordinal) ||
+               affected.Contains("ファイナルファンタジー14", StringComparison.Ordinal);
+    }
+
+    private static string ExtractAffectedServiceSection(string text, LodestoneMaintenanceLanguage language)
+    {
+        var markers = language switch
+        {
+            LodestoneMaintenanceLanguage.Japanese => new[] { "[対象サービス]", "対象サービス" },
+            LodestoneMaintenanceLanguage.German => new[] { "[Betroffener Dienst]", "Betroffener Dienst" },
+            LodestoneMaintenanceLanguage.French => new[] { "[Service concerné]", "Service concerné" },
+            _ => new[] { "[Affected Service]", "Affected Service" }
+        };
+
+        var start = -1;
+        foreach (var marker in markers)
+        {
+            start = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (start >= 0)
+            {
+                start += marker.Length;
+                break;
+            }
+        }
+
+        if (start < 0)
+            return string.Empty;
+
+        var nextMarkers = new[]
+        {
+            "[Details]", "Details", "[Date & Time]", "Date & Time", "[日時]", "日時",
+            "[詳細]", "詳細", "[Betroffener Dienst]", "[Service concerné]"
+        };
+
+        var end = -1;
+        foreach (var marker in nextMarkers)
+        {
+            var index = text.IndexOf(marker, start, StringComparison.OrdinalIgnoreCase);
+            if (index > start && (end < 0 || index < end))
+                end = index;
+        }
+
+        var length = end > start ? end - start : Math.Min(500, text.Length - start);
+        return text.Substring(start, length).Trim();
     }
 
     private static Match FindMaintenanceWindowMatch(string dateSection)
@@ -324,6 +395,15 @@ public sealed class LodestoneMaintenanceService : IDisposable
             : text[start..];
     }
 
+
+    private static DateTime ConvertLodestoneLocalToUtc(DateTime localTime, TimeZoneInfo timeZone, TimeSpan? fixedZoneOffset)
+    {
+        if (fixedZoneOffset.HasValue)
+            return new DateTimeOffset(localTime, fixedZoneOffset.Value).UtcDateTime;
+
+        return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localTime, DateTimeKind.Unspecified), timeZone);
+    }
+
     private static bool TryBuildLocalDateTime(Match match, string prefix, out DateTime dateTime)
     {
         dateTime = DateTime.MinValue;
@@ -398,53 +478,81 @@ public sealed class LodestoneMaintenanceService : IDisposable
         return month > 0;
     }
 
-    private static bool TryGetLodestoneTimeZone(string zoneText, out TimeZoneInfo timeZone)
+    private static bool TryGetLodestoneTimeZone(string zoneText, out TimeZoneInfo timeZone, out TimeSpan? fixedOffset)
     {
+        fixedOffset = null;
+
         switch (zoneText.ToUpperInvariant())
         {
             case "PST":
+                fixedOffset = TimeSpan.FromHours(-8);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("PST", fixedOffset.Value, "PST", "PST");
+                return true;
+
             case "PDT":
-                return TryFindTimeZone("Pacific Standard Time", "America/Los_Angeles", out timeZone);
+                fixedOffset = TimeSpan.FromHours(-7);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("PDT", fixedOffset.Value, "PDT", "PDT");
+                return true;
 
             case "EST":
+                fixedOffset = TimeSpan.FromHours(-5);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("EST", fixedOffset.Value, "EST", "EST");
+                return true;
+
             case "EDT":
-                return TryFindTimeZone("Eastern Standard Time", "America/New_York", out timeZone);
+                fixedOffset = TimeSpan.FromHours(-4);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("EDT", fixedOffset.Value, "EDT", "EDT");
+                return true;
 
             case "MST":
+                fixedOffset = TimeSpan.FromHours(-7);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("MST", fixedOffset.Value, "MST", "MST");
+                return true;
+
             case "MDT":
-                return TryFindTimeZone("Mountain Standard Time", "America/Denver", out timeZone);
+                fixedOffset = TimeSpan.FromHours(-6);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("MDT", fixedOffset.Value, "MDT", "MDT");
+                return true;
 
             case "UTC":
             case "GMT":
+                fixedOffset = TimeSpan.Zero;
                 timeZone = TimeZoneInfo.Utc;
                 return true;
 
             case "BST":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("BST", TimeSpan.FromHours(1), "BST", "BST");
+                fixedOffset = TimeSpan.FromHours(1);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("BST", fixedOffset.Value, "BST", "BST");
                 return true;
 
             case "JST":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("JST", TimeSpan.FromHours(9), "JST", "JST");
+                fixedOffset = TimeSpan.FromHours(9);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("JST", fixedOffset.Value, "JST", "JST");
                 return true;
 
             case "ACST":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("ACST", TimeSpan.FromHours(9.5), "ACST", "ACST");
+                fixedOffset = TimeSpan.FromHours(9.5);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("ACST", fixedOffset.Value, "ACST", "ACST");
                 return true;
 
             case "AEST":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("AEST", TimeSpan.FromHours(10), "AEST", "AEST");
+                fixedOffset = TimeSpan.FromHours(10);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("AEST", fixedOffset.Value, "AEST", "AEST");
                 return true;
 
             case "AEDT":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("AEDT", TimeSpan.FromHours(11), "AEDT", "AEDT");
+                fixedOffset = TimeSpan.FromHours(11);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("AEDT", fixedOffset.Value, "AEDT", "AEDT");
                 return true;
 
             case "CET":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("CET", TimeSpan.FromHours(1), "CET", "CET");
+                fixedOffset = TimeSpan.FromHours(1);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("CET", fixedOffset.Value, "CET", "CET");
                 return true;
 
             case "CEST":
-                timeZone = TimeZoneInfo.CreateCustomTimeZone("CEST", TimeSpan.FromHours(2), "CEST", "CEST");
+                fixedOffset = TimeSpan.FromHours(2);
+                timeZone = TimeZoneInfo.CreateCustomTimeZone("CEST", fixedOffset.Value, "CEST", "CEST");
                 return true;
 
             default:
