@@ -36,7 +36,6 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ICondition condition;
     private readonly IChatGui chatGui;
     private readonly IToastGui toastGui;
-    private readonly ISigScanner sigScanner;
     private readonly LodestoneMaintenanceService maintenanceService = new();
     private readonly ChatTimestampService chatTimestampService;
 
@@ -59,7 +58,6 @@ public sealed class Plugin : IDalamudPlugin
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
     private CommandHintWindow CommandHintWindow { get; init; }
-    private nint chatInputVtbl;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -69,8 +67,7 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IChatGui chatGui,
         IToastGui toastGui,
-        IGameInteropProvider gameInteropProvider,
-        ISigScanner sigScanner)
+        IGameInteropProvider gameInteropProvider)
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
@@ -79,7 +76,6 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.chatGui = chatGui;
         this.toastGui = toastGui;
-        this.sigScanner = sigScanner;
 
         Configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pluginInterface);
@@ -225,27 +221,29 @@ public sealed class Plugin : IDalamudPlugin
         if (module == null)
             return null;
 
-        var basePtr = module->TextInput.TargetTextInputEventInterface;
-        if (basePtr == null)
+        ref var textInput = ref module->TextInput;
+        if (textInput.TargetTextInputEventInterface == null || !module->IsTextInputActive())
             return null;
 
-        if (chatInputVtbl == 0)
+        var stage = AtkStage.Instance();
+        if (stage == null || stage->AtkInputManager == null)
+            return null;
+
+        var focusNode = stage->AtkInputManager->FocusedNode;
+        if (focusNode == null || focusNode->GetNodeType() != NodeType.Text)
+            return null;
+
+        var node = focusNode->ParentNode;
+        for (var i = 0; i < 6 && node != null; i++)
         {
-            try
-            {
-                chatInputVtbl = sigScanner.GetStaticAddressFromSig("48 89 01 48 8D 05 ?? ?? ?? ?? 48 89 81 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 81 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 8B 48 68", 4);
-            }
-            catch
-            {
-                return null;
-            }
+            var input = node->GetAsAtkComponentTextInput();
+            if (input != null)
+                return input;
+
+            node = node->ParentNode;
         }
 
-        var vtbl = *(nint*)basePtr;
-        if (vtbl != chatInputVtbl)
-            return null;
-
-        return (AtkComponentTextInput*)((AtkComponentInputBase*)basePtr - 1);
+        return null;
     }
 
     private bool ShouldHideClock()
