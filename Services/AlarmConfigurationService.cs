@@ -78,6 +78,8 @@ public static class AlarmConfigurationService
 
         configuration.AlarmEditorMinute = Math.Clamp(configuration.AlarmEditorMinute, 0, 59);
         configuration.AlarmEditorSnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes <= 0 ? 5 : configuration.AlarmEditorSnoozeMinutes, 1, 120);
+        if (!Enum.IsDefined(configuration.AlarmEditorRepeatMode))
+            configuration.AlarmEditorRepeatMode = AlarmRepeatMode.None;
     }
 
     public static void RefreshEditorDateForLocalDay(Configuration configuration, string editorTimeZoneId)
@@ -112,7 +114,8 @@ public static class AlarmConfigurationService
             SnoozeCanceled = false,
             SnoozeTriggered = false,
             SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled,
-            SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120)
+            SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120),
+            RepeatMode = configuration.AlarmEditorRepeatMode
         });
     }
 
@@ -136,6 +139,7 @@ public static class AlarmConfigurationService
         alarm.SnoozeTriggered = false;
         alarm.SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled;
         alarm.SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120);
+        alarm.RepeatMode = configuration.AlarmEditorRepeatMode;
         return true;
     }
 
@@ -226,7 +230,80 @@ public static class AlarmConfigurationService
             return true;
         }
 
-        return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out triggerUtc);
+        if (alarm.RepeatMode == AlarmRepeatMode.None)
+            return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out triggerUtc);
+
+        return TryGetNextRecurringUtc(alarm, DateTime.UtcNow, out triggerUtc);
+    }
+
+    public static bool TryGetNextRecurringUtc(AlarmEntry alarm, DateTime fromUtc, out DateTime triggerUtc)
+    {
+        triggerUtc = DateTime.MinValue;
+        if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var baseUtc))
+            return false;
+
+        if (alarm.RepeatMode == AlarmRepeatMode.None)
+        {
+            triggerUtc = baseUtc;
+            return true;
+        }
+
+        var zone = TimeZoneHelper.GetTimeZone(alarm.GetEffectiveTimeZoneId());
+        var baseLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(baseUtc, DateTimeKind.Utc), zone);
+        var fromLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(fromUtc, DateTimeKind.Utc), zone);
+        var candidate = new DateTime(fromLocal.Year, fromLocal.Month, fromLocal.Day, baseLocal.Hour, baseLocal.Minute, 0);
+
+        if (candidate < baseLocal.Date.AddHours(baseLocal.Hour).AddMinutes(baseLocal.Minute))
+            candidate = baseLocal.Date.AddHours(baseLocal.Hour).AddMinutes(baseLocal.Minute);
+
+        while (!RecurringDayMatches(candidate.DayOfWeek, alarm.RepeatMode, baseLocal.DayOfWeek) || TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(candidate, DateTimeKind.Unspecified), zone) < fromUtc.AddSeconds(-60))
+        {
+            candidate = candidate.AddDays(1);
+        }
+
+        triggerUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(candidate, DateTimeKind.Unspecified), zone);
+        return true;
+    }
+
+    public static bool MoveRecurringForward(AlarmEntry alarm, DateTime fromUtc)
+    {
+        if (alarm.RepeatMode == AlarmRepeatMode.None)
+            return false;
+
+        if (!TryGetNextRecurringUtc(alarm, fromUtc.AddSeconds(61), out var nextUtc))
+            return false;
+
+        var local = TimeZoneHelper.ConvertFromUtc(nextUtc, alarm.GetEffectiveTimeZoneId());
+        alarm.DateTimeText = local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        alarm.HasTriggered = false;
+        alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SnoozeCanceled = false;
+        alarm.SnoozeTriggered = false;
+        return true;
+    }
+
+    public static string GetRepeatLabel(AlarmRepeatMode mode)
+    {
+        return mode switch
+        {
+            AlarmRepeatMode.Daily => "Daily",
+            AlarmRepeatMode.Weekly => "Weekly",
+            AlarmRepeatMode.Weekdays => "Weekdays",
+            AlarmRepeatMode.Weekends => "Weekends",
+            _ => "Once"
+        };
+    }
+
+    private static bool RecurringDayMatches(DayOfWeek day, AlarmRepeatMode mode, DayOfWeek firstDay)
+    {
+        return mode switch
+        {
+            AlarmRepeatMode.Daily => true,
+            AlarmRepeatMode.Weekly => day == firstDay,
+            AlarmRepeatMode.Weekdays => day is not DayOfWeek.Saturday and not DayOfWeek.Sunday,
+            AlarmRepeatMode.Weekends => day is DayOfWeek.Saturday or DayOfWeek.Sunday,
+            _ => true
+        };
     }
 
     public static void Remove(Configuration configuration, Guid alarmId)

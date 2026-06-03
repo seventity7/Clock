@@ -51,12 +51,28 @@ public enum ClockLayoutMode
     Vertical = 1
 }
 
+public enum AlarmRepeatMode
+{
+    None = 0,
+    Daily = 1,
+    Weekly = 2,
+    Weekdays = 3,
+    Weekends = 4
+}
+
 public enum ClockPreset
 {
     Classic = 0,
     Minimal = 1,
     GoldHud = 2,
-    RetroPanel = 3
+    RetroPanel = 3,
+    CrystalBlue = 4,
+    DalamudDark = 5,
+    CleanWhite = 6,
+    NeonPurple = 7,
+    CasinoGold = 8,
+    CompactTransparent = 9,
+    RaidMinimal = 10
 }
 
 public enum LocalTimePlacement
@@ -179,7 +195,6 @@ public partial class Configuration : IPluginConfiguration
     public Vector4 ChatTimestampColor = new(0.72f, 0.42f, 1.00f, 1.00f);
     public string ChatTimestampTimeZoneId = "";
 
-    // Legacy enum kept only so existing saved configs can migrate to SelectedTimeZoneId
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
     public string SelectedTimeZoneId = "";
     public List<string> FavoriteTimeZoneIds = new();
@@ -390,11 +405,7 @@ public partial class Configuration : IPluginConfiguration
         var profile = GetActiveProfile();
         var replacement = ClockProfileFactory.CreatePresetProfile(profile.Name, preset);
 
-        profile.ShowBorder = replacement.ShowBorder;
-        profile.ShowIcon = replacement.ShowIcon;
         profile.ShowShadowText = replacement.ShowShadowText;
-        profile.ShowIconBorder = replacement.ShowIconBorder;
-        profile.ClockTextScale = replacement.ClockTextScale;
         profile.ClockTextColor = replacement.ClockTextColor;
         profile.ClockShadowColor = replacement.ClockShadowColor;
         profile.IconTextColor = replacement.IconTextColor;
@@ -405,8 +416,26 @@ public partial class Configuration : IPluginConfiguration
         profile.ClockBackgroundColor = replacement.ClockBackgroundColor;
         profile.BorderColor = replacement.BorderColor;
         profile.BorderOpacity = replacement.BorderOpacity;
-        profile.DisplayStyle = replacement.DisplayStyle;
-        profile.LayoutMode = replacement.LayoutMode;
+
+        profile.LocalTimeTextColor = replacement.ClockTextColor;
+        profile.LocalTimeShadowColor = replacement.ClockShadowColor;
+        profile.LocalTimeBackgroundColor = replacement.ClockBackgroundColor;
+        profile.LocalTimeBackgroundOpacity = Math.Clamp(replacement.ClockBackgroundOpacity * 0.55f, 0.10f, 1.0f);
+        profile.LocalTimeBorderColor = replacement.BorderColor;
+        profile.LocalTimeIconTextColor = replacement.IconTextColor;
+        profile.LocalTimeIconBackgroundColor = replacement.IconBackgroundColor;
+        profile.LocalTimeIconBorderColor = replacement.IconBorderColor;
+        profile.LocalTimeBorderOpacity = replacement.BorderOpacity;
+        profile.LocalTimeIconBorderOpacity = replacement.IconBorderOpacity;
+
+        NextAlarmOverlayDisplayStyle = replacement.DisplayStyle;
+        NextAlarmOverlayShowShadowText = replacement.ShowShadowText;
+        NextAlarmOverlayTextColor = replacement.ClockTextColor;
+        NextAlarmOverlayShadowColor = replacement.ClockShadowColor;
+        MaintenanceOverlayDisplayStyle = replacement.DisplayStyle;
+        MaintenanceOverlayShowShadowText = replacement.ShowShadowText;
+        MaintenanceOverlayTextColor = replacement.ClockTextColor;
+        MaintenanceOverlayShadowColor = replacement.ClockShadowColor;
     }
 
     public void CopyPublicStateFrom(Configuration source)

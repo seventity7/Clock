@@ -1,0 +1,175 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
+using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Windowing;
+
+namespace Clock.Windows;
+
+public sealed class CommandHintWindow : Window, IDisposable
+{
+    private readonly Func<string, string> t;
+
+    // Command list here, some rows are examples/placeholders
+    private readonly List<HintLine> commands = new()
+    {
+        new("/clock", "Toggle the clock overlay", "/clock"),
+        new("/clock settings", "Open Clock settings", "/clock settings"),
+        new("/clock timezone <timezone>", "Change the main clock timezone", "/clock timezone "),
+        new("/clock format 12|24|12s|24s|weekday|date", "Change the time format", "/clock format "),
+        new("/clock colon default|always|hidden|slow|fast", "Change colon animation", "/clock colon "),
+        new("/clock layout horizontal|vertical", "Change the active profile layout", "/clock layout "),
+        new("/clock <timezone1> to <timezone2>", "Compare the current time between two timezones", "/clock "),
+        new("/clock lock", "Lock clock movement", "/clock lock"),
+        new("/clock unlock", "Unlock clock movement", "/clock unlock"),
+        new("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Manage profiles", "/clock profile "),
+        new("/alarms", "Open settings directly on the Alarms tab", "/alarms"),
+    };
+
+    private List<HintLine> visible = new();
+    private string typed = string.Empty;
+    private Vector2 anchor;
+    private Vector2 lastSize = new(430f, 190f);
+    private bool hideExact;
+
+    public CommandHintWindow(Func<string, string> t)
+        : base("###ClockCommandHints")
+    {
+        this.t = t;
+        Flags = ImGuiWindowFlags.NoTitleBar |
+                ImGuiWindowFlags.NoResize |
+                ImGuiWindowFlags.NoScrollbar |
+                ImGuiWindowFlags.NoCollapse |
+                ImGuiWindowFlags.AlwaysAutoResize |
+                ImGuiWindowFlags.NoFocusOnAppearing |
+                ImGuiWindowFlags.NoNavFocus |
+                ImGuiWindowFlags.NoSavedSettings;
+
+        RespectCloseHotkey = false;
+        IsOpen = false;
+        Update(string.Empty, Vector2.Zero);
+    }
+
+    public void Dispose()
+    {
+    }
+
+    public void Update(string currentText, Vector2 textInputAnchor)
+    {
+        // Trim is only at the end so partially typed command arguments are still filtered naturally while typing.
+        typed = (currentText ?? string.Empty).TrimEnd();
+        anchor = textInputAnchor;
+        hideExact = IsCompleteCommand(typed);
+
+        // The popup is only a hint list; it should disappear once the typed command is completed.
+        var query = typed.Trim();
+        visible = commands
+            .Where(line => Matches(line, query))
+            .OrderBy(line => line.SortText.StartsWith(query, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(line => line.SortText.Length)
+            .Take(10)
+            .ToList();
+    }
+
+    public override void PreDraw()
+    {
+        // Anchored above the actual chat input when available. The fallback keeps the popup near
+        // the bottom-left area without depending on a specific chat addon size field.
+        var viewport = ImGui.GetMainViewport();
+        var pos = anchor;
+        if (pos.X <= 0f && pos.Y <= 0f)
+            pos = new Vector2(viewport.Pos.X + 24f, viewport.Pos.Y + viewport.Size.Y - lastSize.Y - 88f);
+        else
+            pos = new Vector2(pos.X, MathF.Max(viewport.Pos.Y + 24f, pos.Y - lastSize.Y - 8f));
+
+        ImGui.SetNextWindowPos(pos, ImGuiCond.Always);
+
+        // Keep this styling local to the hint popup to keep the normal Clock windows/buttons themes.
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8f, 7f));
+        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4f, 3f));
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1f);
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.03f, 0.03f, 0.035f, 0.92f));
+        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.95f, 0.74f, 0.32f, 0.72f));
+    }
+
+    public override void PostDraw()
+    {
+        ImGui.PopStyleColor(2);
+        ImGui.PopStyleVar(3);
+    }
+
+    public override void Draw()
+    {
+        if (visible.Count == 0)
+        {
+            ImGui.TextDisabled(t("No Clock commands found"));
+            lastSize = ImGui.GetWindowSize();
+            return;
+        }
+
+        ImGui.TextColored(new Vector4(1f, 0.84f, 0.42f, 1f), t("Clock commands"));
+        ImGui.Separator();
+
+        foreach (var line in visible)
+        {
+            // The translated description is intentionally muted.
+            ImGui.TextUnformatted(line.Command);
+            ImGui.Indent(16f);
+            ImGui.TextDisabled(t(line.Description));
+            ImGui.Unindent(16f);
+            ImGui.Spacing();
+        }
+
+        lastSize = ImGui.GetWindowSize();
+    }
+
+    public override bool DrawConditions()
+    {
+        return IsOpen && !hideExact && typed.StartsWith("/clock", StringComparison.OrdinalIgnoreCase) && visible.Count > 0;
+    }
+
+    private bool IsCompleteCommand(string text)
+    {
+        // Exact static commands should close the popup but example rows with <arguments> stay visible
+        // until the user provides enough text to make the command meaningful.
+        if (!string.Equals(text, "/clock", StringComparison.OrdinalIgnoreCase) &&
+            commands.Any(line => string.Equals(line.InsertText.TrimEnd(), text, StringComparison.OrdinalIgnoreCase) && !line.Command.Contains('<')))
+            return true;
+
+        var lower = text.ToLowerInvariant();
+
+        // Timezone comparisons use free-form aliases, so both sides of "to" are treated as completion.
+        if (lower.StartsWith("/clock ") && lower.Contains(" to "))
+        {
+            var bits = lower["/clock ".Length..].Split(" to ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (bits.Length == 2 && bits[0].Length > 0 && bits[1].Length > 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool Matches(HintLine line, string query)
+    {
+        // This keeps the list shrinking predictably as the user types.
+        if (string.IsNullOrWhiteSpace(query) || string.Equals(query, "/clock", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (line.SortText.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (line.Command.Contains('<') && query.StartsWith("/clock ", StringComparison.OrdinalIgnoreCase))
+        {
+            var afterClock = query["/clock ".Length..].TrimStart();
+            return line.Command.StartsWith("/clock <", StringComparison.OrdinalIgnoreCase) && afterClock.Length > 0;
+        }
+
+        return false;
+    }
+
+    private readonly record struct HintLine(string Command, string Description, string InsertText)
+    {
+        public string SortText => Command.Replace("<timezone1>", "").Replace("<timezone2>", "").Replace("<timezone>", "").TrimEnd();
+    }
+}

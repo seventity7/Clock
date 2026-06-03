@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Linq;
+using System.Numerics;
 using System.Threading.Tasks;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.Command;
@@ -10,7 +11,9 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Interface.Windowing;
+using System.Text.RegularExpressions;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Clock.Services;
 using Clock.Windows;
 
@@ -33,6 +36,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ICondition condition;
     private readonly IChatGui chatGui;
     private readonly IToastGui toastGui;
+    private readonly ISigScanner sigScanner;
     private readonly LodestoneMaintenanceService maintenanceService = new();
     private readonly ChatTimestampService chatTimestampService;
 
@@ -54,6 +58,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    private CommandHintWindow CommandHintWindow { get; init; }
+    private nint chatInputVtbl;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -63,7 +69,8 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IChatGui chatGui,
         IToastGui toastGui,
-        IGameInteropProvider gameInteropProvider)
+        IGameInteropProvider gameInteropProvider,
+        ISigScanner sigScanner)
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
@@ -72,6 +79,7 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.chatGui = chatGui;
         this.toastGui = toastGui;
+        this.sigScanner = sigScanner;
 
         Configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pluginInterface);
@@ -80,18 +88,20 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
+        CommandHintWindow = new CommandHintWindow(T);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(CommandHintWindow);
 
         chatTimestampService = new ChatTimestampService(Configuration, gameInteropProvider, log);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage =
-                "Clock commands: /clock, /clock help, /alarms, /clock timezone <TimeZoneInfo ID>, /clock format 12|24|12s|24s|weekday|date, " +
+                "Clock commands: /clock, /clock help, /clock timezone <TimeZoneInfo ID>, /clock format 12|24|12s|24s|weekday|date, " +
                 "/clock colon default|always|hidden|slow|fast, /clock layout horizontal|vertical, " +
-                "/clock preset classic|minimal|gold|retro, /clock lock, /clock unlock, " +
+                "/clock <timezone> to <timezone>, /clock lock, /clock unlock, " +
                 "/clock profile next|list|set <n>|add <name>|rename <name>|delete"
         });
 
@@ -138,6 +148,7 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        CommandHintWindow.Dispose();
 
         commandManager.RemoveHandler(CommandName);
         commandManager.RemoveHandler(SettingsCommand);
@@ -156,9 +167,85 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         CheckReminders();
+        MonitorCommandHints();
 
         MainWindow.IsOpen = wantedMainWindowOpen && !ShouldHideClock();
         WindowSystem.Draw();
+    }
+
+
+    private unsafe void MonitorCommandHints()
+    {
+        try
+        {
+            if (!Configuration.CommandSuggestionEnabled)
+            {
+                CommandHintWindow.IsOpen = false;
+                return;
+            }
+
+            var input = GetActiveChatTextInput();
+            if (input == null)
+            {
+                CommandHintWindow.IsOpen = false;
+                return;
+            }
+
+            var addon = input->OwnerAddon;
+            if (addon == null)
+                addon = input->ContainingAddon2;
+
+            if (addon == null || !string.Equals(addon->NameString.ToString(), "ChatLog", StringComparison.Ordinal))
+            {
+                CommandHintWindow.IsOpen = false;
+                return;
+            }
+
+            var currentText = input->EvaluatedString.ToString();
+            if (!currentText.StartsWith("/clock", StringComparison.OrdinalIgnoreCase))
+            {
+                CommandHintWindow.IsOpen = false;
+                return;
+            }
+
+            var chatInputAnchor = new Vector2(addon->X + 12f, addon->Y + 336f);
+            CommandHintWindow.Update(currentText, chatInputAnchor);
+            CommandHintWindow.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            CommandHintWindow.IsOpen = false;
+            log.Verbose($"Clock command hints failed: {ex.Message}");
+        }
+    }
+
+    private unsafe AtkComponentTextInput* GetActiveChatTextInput()
+    {
+        var module = RaptureAtkModule.Instance();
+        if (module == null)
+            return null;
+
+        var basePtr = module->TextInput.TargetTextInputEventInterface;
+        if (basePtr == null)
+            return null;
+
+        if (chatInputVtbl == 0)
+        {
+            try
+            {
+                chatInputVtbl = sigScanner.GetStaticAddressFromSig("48 89 01 48 8D 05 ?? ?? ?? ?? 48 89 81 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 81 ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 8B 48 68", 4);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        var vtbl = *(nint*)basePtr;
+        if (vtbl != chatInputVtbl)
+            return null;
+
+        return (AtkComponentTextInput*)((AtkComponentInputBase*)basePtr - 1);
     }
 
     private bool ShouldHideClock()
@@ -214,7 +301,11 @@ public sealed class Plugin : IDalamudPlugin
             }
 
             if ((nowUtc - alarmUtc).TotalSeconds > 60)
+            {
+                if (alarm.RepeatMode != AlarmRepeatMode.None && AlarmConfigurationService.MoveRecurringForward(alarm, nowUtc))
+                    changed = true;
                 continue;
+            }
 
             if (recentlyTriggeredAlarmIds.Contains(alarm.Id))
                 continue;
@@ -231,6 +322,8 @@ public sealed class Plugin : IDalamudPlugin
                 alarm.SnoozedUntilUtc = DateTime.MinValue;
                 alarm.SnoozeTriggered = true;
                 alarm.HasTriggered = true;
+                if (alarm.RepeatMode != AlarmRepeatMode.None)
+                    AlarmConfigurationService.MoveRecurringForward(alarm, alarmUtc);
                 continue;
             }
 
@@ -239,7 +332,11 @@ public sealed class Plugin : IDalamudPlugin
             alarm.SnoozeCanceled = false;
 
             if (!AlarmConfigurationService.ScheduleSnooze(alarm, nowUtc))
+            {
                 alarm.SnoozedUntilUtc = DateTime.MinValue;
+                if (alarm.RepeatMode != AlarmRepeatMode.None)
+                    AlarmConfigurationService.MoveRecurringForward(alarm, alarmUtc);
+            }
         }
 
         if (changed)
@@ -280,7 +377,7 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        if (!Configuration.MaintenanceReminderEnabled)
+        if (!Configuration.MaintenanceReminderEnabled && !Configuration.ShowMaintenanceOnOverlay)
             return;
 
         if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalHours < 6)
@@ -401,6 +498,9 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        if (HandleTimeZoneCompareCommand(args))
+            return;
+
         var split = args.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var sub = split[0].ToLowerInvariant();
         var rest = split.Length > 1 ? split[1] : string.Empty;
@@ -458,6 +558,64 @@ public sealed class Plugin : IDalamudPlugin
                 PrintHelp();
                 return;
         }
+    }
+
+
+    private bool HandleTimeZoneCompareCommand(string rawArgs)
+    {
+        var match = Regex.Match(rawArgs, @"^(.+?)\s+to\s+(.+?)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success)
+            return false;
+
+        var leftRaw = match.Groups[1].Value.Trim();
+        var rightRaw = match.Groups[2].Value.Trim();
+        if (!TimeZoneHelper.TryResolveTimeZone(leftRaw, out var leftId))
+        {
+            chatGui.PrintError($"Invalid timezone: {leftRaw}", "Clock");
+            return true;
+        }
+
+        if (!TimeZoneHelper.TryResolveTimeZone(rightRaw, out var rightId))
+        {
+            chatGui.PrintError($"Invalid timezone: {rightRaw}", "Clock");
+            return true;
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var leftZone = TimeZoneHelper.GetTimeZone(leftId);
+        var rightZone = TimeZoneHelper.GetTimeZone(rightId);
+        var leftTime = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, leftZone);
+        var rightTime = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, rightZone);
+        var offsetDiff = rightZone.GetUtcOffset(nowUtc) - leftZone.GetUtcOffset(nowUtc);
+        var diffText = BuildOffsetDifferenceText(offsetDiff);
+
+        var leftLabel = BuildTypedTimeZoneLabel(leftRaw, leftId);
+        var rightLabel = BuildTypedTimeZoneLabel(rightRaw, rightId);
+        chatGui.Print($"It is {leftTime:HH:mm} {leftLabel} and {rightTime:HH:mm} {rightLabel} {diffText}.", "Clock");
+        return true;
+    }
+
+    private static string BuildTypedTimeZoneLabel(string raw, string resolvedId)
+    {
+        var trimmed = raw.Trim();
+        if (Regex.IsMatch(trimmed, "^[A-Za-z]{2,5}$", RegexOptions.CultureInvariant))
+            return trimmed.ToUpperInvariant();
+
+        return TimeZoneHelper.ToShortText(resolvedId);
+    }
+
+    private static string BuildOffsetDifferenceText(TimeSpan difference)
+    {
+        var totalMinutes = (int)Math.Round(Math.Abs(difference.TotalMinutes));
+        if (totalMinutes == 0)
+            return "with no time difference";
+
+        var hours = totalMinutes / 60;
+        var minutes = totalMinutes % 60;
+        var hourText = hours > 0 ? $"{hours} hour{(hours == 1 ? "" : "s")}" : string.Empty;
+        var minuteText = minutes > 0 ? $"{minutes} minute{(minutes == 1 ? "" : "s")}" : string.Empty;
+        var combined = string.IsNullOrWhiteSpace(hourText) ? minuteText : string.IsNullOrWhiteSpace(minuteText) ? hourText : $"{hourText} {minuteText}";
+        return $"with {combined} {(difference.TotalMinutes > 0 ? "ahead" : "behind")} difference";
     }
 
     private void OnSettingsCommand(string command, string args)
@@ -631,12 +789,19 @@ public sealed class Plugin : IDalamudPlugin
             "minimal" => ClockPreset.Minimal,
             "gold" => ClockPreset.GoldHud,
             "retro" => ClockPreset.RetroPanel,
+            "blue" or "crystal" or "crystalblue" => ClockPreset.CrystalBlue,
+            "dark" or "dalamud" or "dalamuddark" => ClockPreset.DalamudDark,
+            "white" or "clean" or "cleanwhite" => ClockPreset.CleanWhite,
+            "purple" or "neon" or "neonpurple" => ClockPreset.NeonPurple,
+            "casino" or "casinogold" => ClockPreset.CasinoGold,
+            "transparent" or "compact" or "compacttransparent" => ClockPreset.CompactTransparent,
+            "raid" or "raidminimal" => ClockPreset.RaidMinimal,
             _ => ClockPreset.Classic
         };
 
-        if (rest is not ("classic" or "minimal" or "gold" or "retro"))
+        if (rest is not ("classic" or "minimal" or "gold" or "retro" or "blue" or "crystal" or "crystalblue" or "dark" or "dalamud" or "dalamuddark" or "white" or "clean" or "cleanwhite" or "purple" or "neon" or "neonpurple" or "casino" or "casinogold" or "transparent" or "compact" or "compacttransparent" or "raid" or "raidminimal"))
         {
-            chatGui.PrintError("Invalid preset. Use classic, minimal, gold or retro.", "Clock");
+            chatGui.PrintError("Invalid preset. Use classic, minimal, gold, retro, blue, dark, white, purple, casino, transparent or raid.", "Clock");
             return;
         }
 
@@ -725,12 +890,12 @@ public sealed class Plugin : IDalamudPlugin
     {
         chatGui.Print("/clock - toggle clock", "Clock");
         chatGui.Print("/clock settings - open settings", "Clock");
-        chatGui.Print("/clockalarms or /alarms - open settings on the alarms tab", "Clock");
+        chatGui.Print("/alarms - open settings on the alarms tab", "Clock");
         chatGui.Print("/clock timezone <TimeZoneInfo ID or alias>", "Clock");
         chatGui.Print("/clock format 12|24|12s|24s|weekday|date", "Clock");
         chatGui.Print("/clock colon default|always|hidden|slow|fast", "Clock");
         chatGui.Print("/clock layout horizontal|vertical", "Clock");
-        chatGui.Print("/clock preset classic|minimal|gold|retro", "Clock");
+        chatGui.Print("/clock <timezone1> to <timezone2> - compare current time between two timezones", "Clock");
         chatGui.Print("/clock lock | /clock unlock", "Clock");
         chatGui.Print("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Clock");
     }

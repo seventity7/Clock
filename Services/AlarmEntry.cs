@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 
 namespace Clock;
@@ -9,8 +9,8 @@ public sealed class AlarmEntry
     public Guid Id = Guid.NewGuid();
     public string DateTimeText = "";
     public string Message = "";
+    public AlarmRepeatMode RepeatMode = AlarmRepeatMode.None;
 
-    // Legacy enum kept only so existing saved alarms can migrate to TimeZoneId
     public ClockTimeZone TimeZone = ClockTimeZone.EST;
     public string TimeZoneId = "";
     public bool Enabled = true;
@@ -28,11 +28,12 @@ public sealed class AlarmEntry
             return $"Invalid alarm - {TimeZoneHelper.ToShortText(effectiveTimeZoneId)}";
 
         var local = TimeZoneHelper.ConvertFromUtc(utc, effectiveTimeZoneId);
-        var dateText = local.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+        var dateText = local.ToString("MMM dd", CultureInfo.InvariantCulture);
         var timeText = TimeFormatHelper.FormatClock(local, displayFormat);
         var messageText = string.IsNullOrWhiteSpace(Message) ? defaultMessage : Message.Trim();
+        var repeatText = RepeatMode == AlarmRepeatMode.None ? string.Empty : $" [{AlarmConfigurationService.GetRepeatLabel(RepeatMode)}]";
 
-        return $"{dateText} - {TimeZoneHelper.ToShortText(effectiveTimeZoneId)} - {timeText} | {messageText}";
+        return $"{dateText} - {TimeZoneHelper.ToShortText(effectiveTimeZoneId)} - {timeText}{repeatText} | {messageText}";
     }
 
     public string BuildTriggerMessage(ClockTimeFormat displayFormat, bool isSnooze = false, string defaultMessage = "Alarm")

@@ -16,7 +16,10 @@ public class ConfigWindow : Window, IDisposable
     private enum ConfigTabRequest
     {
         None,
-        Alarms
+        Alarms,
+        Appearance,
+        AppearanceBottom,
+        AppearanceLocalTimeLayout
     }
 
     private const string HelpUrl = "https://github.com/seventity7/clock";
@@ -126,9 +129,17 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.EndTabItem();
                 }
 
-                if (ImGui.BeginTabItem(T("Appearance")))
+                var appearanceTabFlags = requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout
+                    ? ImGuiTabItemFlags.SetSelected
+                    : ImGuiTabItemFlags.None;
+
+                if (ImGui.BeginTabItem(T("Appearance"), appearanceTabFlags))
                 {
-                    DrawAppearanceTab();
+                    var appearanceJump = requestedTab;
+                    if (requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout)
+                        requestedTab = ConfigTabRequest.None;
+
+                    DrawAppearanceTab(appearanceJump);
                     ImGui.EndTabItem();
                 }
 
@@ -329,6 +340,14 @@ public class ConfigWindow : Window, IDisposable
             }
             Help(T("Hides only the clock during cutscenes."));
 
+            bool commandSuggestion = configuration.CommandSuggestionEnabled;
+            if (ImGui.Checkbox(T("Command suggestion"), ref commandSuggestion))
+            {
+                configuration.CommandSuggestionEnabled = commandSuggestion;
+                configuration.Save();
+            }
+            Help(T("Show a autocompletion list when typing \"/clock\" commands"));
+
         });
 
         Section(T("Time Display"), () =>
@@ -343,9 +362,11 @@ public class ConfigWindow : Window, IDisposable
                 profile.ShowLocalTime = showLocalTime;
                 configuration.Save();
             }
+            ImGui.SameLine();
+            DrawAppearanceShortcutIcon("ShowLocalTime", ConfigTabRequest.AppearanceLocalTimeLayout);
 
             DrawFavoriteTimezonesSection();
-        });
+        }, () => DrawAppearanceShortcutIcon("TimeDisplay", ConfigTabRequest.Appearance));
 
         Section(T("Chat Timestamp"), () =>
         {
@@ -377,10 +398,31 @@ public class ConfigWindow : Window, IDisposable
         if (hovered)
         {
             ImGui.BeginTooltip();
-            ImGui.TextUnformatted(T("Recommend to turn off any similar feature"));
-            ImGui.TextUnformatted(T("from other plugins to avoid any issues."));
+            ImGui.TextUnformatted(T("Recommend to turn off any similar feature from other plugins to avoid any issues."));
             ImGui.EndTooltip();
         }
+    }
+
+
+    private void DrawAppearanceShortcutIcon(string id, ConfigTabRequest target)
+    {
+        const string icon = "\uf53f";
+        var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+        bool hovered;
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            var size = ImGui.CalcTextSize(icon);
+            var pos = ImGui.GetCursorScreenPos();
+            if (ImGui.InvisibleButton($"##ClockAppearanceShortcut{id}", size))
+                requestedTab = target;
+
+            hovered = ImGui.IsItemHovered();
+            ImGui.GetWindowDrawList().AddText(pos, ImGui.GetColorU32(hovered ? GoldTextColor : disabledColor), icon);
+        }
+
+        if (hovered)
+            ImGui.SetTooltip(T("Appearance Settings"));
     }
 
 
@@ -848,6 +890,16 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
+            ImGui.SameLine();
+            var repeatNames = new[] { "Once", "Daily", "Weekly", "Weekdays", "Weekends" };
+            var repeatIndex = Math.Clamp((int)configuration.AlarmEditorRepeatMode, 0, repeatNames.Length - 1);
+            ImGui.SetNextItemWidth(118f);
+            if (DrawCombo("Repeat", repeatNames, ref repeatIndex, true))
+            {
+                configuration.AlarmEditorRepeatMode = (AlarmRepeatMode)repeatIndex;
+                configuration.Save();
+            }
+
             if (configuration.AlarmEditorSnoozeEnabled)
             {
                 var snoozeOptions = new[] { "5", "10", "15", "30" };
@@ -869,20 +921,25 @@ public class ConfigWindow : Window, IDisposable
 
             bool isEditingAlarm = editingAlarmId.HasValue;
             var editorZone = GetAlarmEditorTimeZone();
+            var alarmInPast = !isEditingAlarm && IsAlarmEditorInPast(editorZone);
 
-            ImGui.BeginDisabled(isEditingAlarm);
-            PushColoredButton("#ffb300", Vector4.One);
+            ImGui.BeginDisabled(isEditingAlarm || alarmInPast);
+            if (alarmInPast)
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.55f, 0.08f, 0.08f, 0.85f));
             if (ImGui.Button(T("Add Alarm")))
             {
                 AlarmConfigurationService.AddFromEditor(configuration, editorZone);
+                configuration.AlarmEditorRepeatMode = AlarmRepeatMode.None;
                 configuration.Save();
             }
-            PopColoredButton();
+            if (alarmInPast)
+                ImGui.PopStyleColor();
             ImGui.EndDisabled();
+            if (alarmInPast && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip(T("Can't create a Alarm for the past!"));
 
             ImGui.SameLine();
 
-            PushColoredButton("#228700", Vector4.One);
             if (ImGui.Button(T("Test Alarm")))
             {
                 var temp = new AlarmEntry
@@ -891,17 +948,16 @@ public class ConfigWindow : Window, IDisposable
                     Message = string.IsNullOrWhiteSpace(configuration.AlarmEditorMessage) ? "Alarm" : configuration.AlarmEditorMessage.Trim(),
                     TimeZoneId = editorZone,
                     SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled,
-                    SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120)
+                    SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120),
+                    RepeatMode = configuration.AlarmEditorRepeatMode
                 };
 
                 plugin.TestAlarmOutput(temp.BuildTriggerMessage(configuration.TimeFormat));
             }
-            PopColoredButton();
 
             ImGui.SameLine();
 
             ImGui.BeginDisabled(!isEditingAlarm);
-            PushColoredButton("#D180FF", Vector4.One);
             if (ImGui.Button(T("Edit Alarm")) && editingAlarmId.HasValue)
             {
                 if (AlarmConfigurationService.UpdateFromEditor(configuration, editingAlarmId.Value, editorZone))
@@ -910,8 +966,39 @@ public class ConfigWindow : Window, IDisposable
                     ClearAlarmEditingState();
                 }
             }
-            PopColoredButton();
             ImGui.EndDisabled();
+
+            bool nextAlarmOverlay = configuration.ShowNextAlarmOnOverlay;
+            if (ImGui.Checkbox(T("Show next on overlay"), ref nextAlarmOverlay))
+            {
+                configuration.ShowNextAlarmOnOverlay = nextAlarmOverlay;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            DrawAppearanceShortcutIcon("NextAlarmOverlay", ConfigTabRequest.AppearanceBottom);
+
+            ImGui.Indent(18f);
+            var nextAlarmScale = configuration.NextAlarmOverlayTextScale;
+            ImGui.SetNextItemWidth(108f);
+            if (ImGui.SliderFloat("##NextAlarmOverlayTextScale", ref nextAlarmScale, 0.45f, 1.80f, "%.2f"))
+            {
+                configuration.NextAlarmOverlayTextScale = nextAlarmScale;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled(T("Text Size"));
+            ImGui.SameLine();
+
+            var nextAlarmVertical = configuration.NextAlarmOverlayVerticalOffset;
+            ImGui.SetNextItemWidth(108f);
+            if (ImGui.SliderFloat("##NextAlarmOverlayVerticalOffset", ref nextAlarmVertical, -80f, 80f, "%.0f"))
+            {
+                configuration.NextAlarmOverlayVerticalOffset = nextAlarmVertical;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled(T("Text Position"));
+            ImGui.Unindent(18f);
 
             ImGui.TextDisabled(T("Alarm notifications are shown in chat and on screen."));
         });
@@ -993,6 +1080,38 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
+            bool maintenanceOverlay = configuration.ShowMaintenanceOnOverlay;
+            if (ImGui.Checkbox(T("Show on main overlay"), ref maintenanceOverlay))
+            {
+                configuration.ShowMaintenanceOnOverlay = maintenanceOverlay;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            DrawAppearanceShortcutIcon("MaintenanceOverlay", ConfigTabRequest.AppearanceBottom);
+
+            ImGui.Indent(18f);
+            var maintenanceScale = configuration.MaintenanceOverlayTextScale;
+            ImGui.SetNextItemWidth(108f);
+            if (ImGui.SliderFloat("##MaintenanceOverlayTextScale", ref maintenanceScale, 0.45f, 1.80f, "%.2f"))
+            {
+                configuration.MaintenanceOverlayTextScale = maintenanceScale;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled(T("Text Size"));
+            ImGui.SameLine();
+
+            var maintenanceVertical = configuration.MaintenanceOverlayVerticalOffset;
+            ImGui.SetNextItemWidth(108f);
+            if (ImGui.SliderFloat("##MaintenanceOverlayVerticalOffset", ref maintenanceVertical, -80f, 80f, "%.0f"))
+            {
+                configuration.MaintenanceOverlayVerticalOffset = maintenanceVertical;
+                configuration.Save();
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled(T("Text Position"));
+            ImGui.Unindent(18f);
+
             var languageOptions = new[]
             {
                 LodestoneMaintenanceLanguage.EnglishUs,
@@ -1053,7 +1172,7 @@ public class ConfigWindow : Window, IDisposable
             ImGui.Spacing();
             var selectedLanguageName = LodestoneMaintenanceService.GetLanguageName(configuration.MaintenanceLanguage);
             ImGui.TextDisabled(string.Format(T("Uses {0} Lodestone maintenance notices."), selectedLanguageName));
-            ImGui.TextDisabled(T("Automatic checks run only while maintenance reminders are enabled."));
+            ImGui.TextDisabled(T("Automatic checks run while reminders or maintenance overlay are enabled."));
             ImGui.Spacing();
             ImGui.TextColored(GoldTextColor, T("Latest Lodestone maintenance:"));
             ImGui.TextWrapped(string.IsNullOrWhiteSpace(configuration.LastDetectedMaintenanceMessage)
@@ -1129,38 +1248,25 @@ public class ConfigWindow : Window, IDisposable
             ImGui.SetNextItemWidth(114f);
             ImGui.InputText(T("New Profile"), ref newProfileName, 64);
 
-            PushColoredButton("#228700", Vector4.One);
             if (ImGui.Button(T("Create From Current")))
             {
                 configuration.AddProfile(newProfileName);
                 configuration.Save();
                 textSizeInputValue = configuration.GetActiveProfile().ClockTextScale;
             }
-            PopColoredButton();
 
             ImGui.SameLine();
 
-            PushColoredButton("#ff5757", Vector4.One);
             if (ImGui.Button(T("Delete Active Profile")))
             {
                 configuration.DeleteActiveProfile();
                 configuration.Save();
                 textSizeInputValue = configuration.GetActiveProfile().ClockTextScale;
             }
-            PopColoredButton();
-        });
-
-        Section(T("Presets"), () =>
-        {
-            ImGui.BulletText(T("Classic"));
-            ImGui.BulletText(T("Minimal"));
-            ImGui.BulletText(T("Gold HUD"));
-            ImGui.BulletText(T("Retro Panel"));
-            ImGui.TextDisabled(T("Presets are built-in themes. Profiles are your own saved custom setups."));
         });
     }
 
-    private void DrawAppearanceTab()
+    private void DrawAppearanceTab(ConfigTabRequest scrollTarget = ConfigTabRequest.None)
     {
         var profile = configuration.GetActiveProfile();
 
@@ -1184,7 +1290,7 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
-            var presetNames = new[] { "Classic", "Minimal", "Gold HUD", "Retro Panel" };
+            var presetNames = new[] { "Classic", "Minimal", "Gold HUD", "Retro Panel", "Crystal Blue", "Dalamud Dark", "Clean White", "Neon Purple", "Casino Gold", "Compact Transparent", "Raid Minimal" };
             var presetIndex = (int)presetSelection;
             ImGui.SetNextItemWidth(108f);
             if (DrawCombo("Preset", presetNames, ref presetIndex))
@@ -1194,14 +1300,12 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
-            PushColoredButton("#ffb300", Vector4.One);
             if (ImGui.Button(T("Apply Preset To Active Profile")))
             {
                 configuration.ApplyPresetToActiveProfile(presetSelection);
                 configuration.Save();
                 textSizeInputValue = configuration.GetActiveProfile().ClockTextScale;
             }
-            PopColoredButton();
 
             DrawCompactColonCombo();
         });
@@ -1285,6 +1389,9 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
         });
+
+        if (scrollTarget == ConfigTabRequest.AppearanceLocalTimeLayout)
+            ImGui.SetScrollHereY(0.25f);
 
         Section(T("Local Time Layout"), () =>
         {
@@ -1407,8 +1514,73 @@ public class ConfigWindow : Window, IDisposable
 
             ImGui.TextDisabled(T("Local time follows its own style settings and can be placed inside or outside the main display."));
         });
+
+        Section(T("Next Alarm Overlay Text"), () =>
+        {
+            DrawOverlayTextAppearanceSettings(true);
+        });
+
+        Section(T("Maintenance Overlay Text"), () =>
+        {
+            DrawOverlayTextAppearanceSettings(false);
+        });
+
+        if (scrollTarget == ConfigTabRequest.AppearanceBottom)
+            ImGui.SetScrollHereY(1.0f);
     }
 
+
+    private void DrawOverlayTextAppearanceSettings(bool nextAlarm)
+    {
+        var styleNames = new[] { "Classic", "Minimal", "Strong Shadow", "Soft Glass", "Retro Panel" };
+        var style = nextAlarm ? configuration.NextAlarmOverlayDisplayStyle : configuration.MaintenanceOverlayDisplayStyle;
+        var styleIndex = Math.Clamp((int)style, 0, styleNames.Length - 1);
+
+        ImGui.SetNextItemWidth(114f);
+        if (ImGui.BeginCombo($"{T("Display Style")}##{(nextAlarm ? "NextAlarmOverlayStyle" : "MaintenanceOverlayStyle")}", T(styleNames[styleIndex])))
+        {
+            for (var i = 0; i < styleNames.Length; i++)
+            {
+                var selected = i == styleIndex;
+                if (ImGui.Selectable(T(styleNames[i]), selected))
+                {
+                    if (nextAlarm)
+                        configuration.NextAlarmOverlayDisplayStyle = (ClockDisplayStyle)i;
+                    else
+                        configuration.MaintenanceOverlayDisplayStyle = (ClockDisplayStyle)i;
+
+                    configuration.Save();
+                }
+
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+
+            ImGui.EndCombo();
+        }
+
+        var shadow = nextAlarm ? configuration.NextAlarmOverlayShowShadowText : configuration.MaintenanceOverlayShowShadowText;
+        if (ImGui.Checkbox($"{T("Shadow Text")}##{(nextAlarm ? "NextAlarmOverlayShadowToggle" : "MaintenanceOverlayShadowToggle")}", ref shadow))
+        {
+            if (nextAlarm)
+                configuration.NextAlarmOverlayShowShadowText = shadow;
+            else
+                configuration.MaintenanceOverlayShowShadowText = shadow;
+
+            configuration.Save();
+        }
+
+        if (nextAlarm)
+        {
+            DrawCompactColorRow("Text Color", ref configuration.NextAlarmOverlayTextColor, "##NextAlarmOverlayTextColor");
+            DrawCompactColorRow("Shadow Color", ref configuration.NextAlarmOverlayShadowColor, "##NextAlarmOverlayShadowColor");
+        }
+        else
+        {
+            DrawCompactColorRow("Text Color", ref configuration.MaintenanceOverlayTextColor, "##MaintenanceOverlayTextColor");
+            DrawCompactColorRow("Shadow Color", ref configuration.MaintenanceOverlayShadowColor, "##MaintenanceOverlayShadowColor");
+        }
+    }
 
     private void DrawLocalTextSizeControl()
     {
@@ -1656,6 +1828,15 @@ public class ConfigWindow : Window, IDisposable
         return editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId;
     }
 
+    private bool IsAlarmEditorInPast(string editorZone)
+    {
+        var text = AlarmConfigurationService.BuildEditorDateTimeText(configuration, editorZone);
+        if (!TimeZoneHelper.TryParseInZone(text, editorZone, out var utc))
+            return true;
+
+        return utc <= DateTime.UtcNow;
+    }
+
     private void LoadAlarmIntoEditor(AlarmEntry alarm)
     {
         editingAlarmId = alarm.Id;
@@ -1670,6 +1851,7 @@ public class ConfigWindow : Window, IDisposable
         configuration.AlarmEditorMessage = alarm.Message ?? "";
         configuration.AlarmEditorSnoozeEnabled = alarm.SnoozeEnabled;
         configuration.AlarmEditorSnoozeMinutes = Math.Clamp(alarm.SnoozeMinutes <= 0 ? 5 : alarm.SnoozeMinutes, 1, 120);
+        configuration.AlarmEditorRepeatMode = alarm.RepeatMode;
 
         if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
         {
@@ -1693,11 +1875,9 @@ public class ConfigWindow : Window, IDisposable
 
     private bool DrawAlarmEditIconButton(string id, Vector2 buttonSize)
     {
-        PushColoredButton("#D180FF", Vector4.One);
         bool clicked = ImGui.Button($"##{id}", buttonSize);
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
-        PopColoredButton();
 
         var drawList = ImGui.GetWindowDrawList();
         uint iconColor = ImGui.GetColorU32(Vector4.One);
@@ -1733,12 +1913,10 @@ public class ConfigWindow : Window, IDisposable
 
     private bool DrawAlarmReenableButton(string id, Vector2 buttonSize)
     {
-        PushColoredButton("#32a84e", Vector4.One);
         bool clicked = ImGui.Button($"##{id}", buttonSize);
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         bool hovered = ImGui.IsItemHovered();
-        PopColoredButton();
 
         var drawList = ImGui.GetWindowDrawList();
         const string symbol = "R";
@@ -1793,13 +1971,12 @@ public class ConfigWindow : Window, IDisposable
 
         DrawCommandLine("/clock", "Toggle the clock window");
         DrawCommandLine("/clock settings", "Open settings");
-        DrawCommandLine("/clockalarms", "Open settings directly on the Alarms tab");
         DrawCommandLine("/alarms", "Open settings directly on the Alarms tab");
         DrawCommandLine("/clock timezone <TimeZoneInfo ID or alias>", "Change the main clock timezone");
         DrawCommandLine("/clock format 12|24|12s|24s|weekday|date", "Change time format preset");
         DrawCommandLine("/clock colon default|always|hidden|slow|fast", "Change colon animation");
         DrawCommandLine("/clock layout horizontal|vertical", "Change active profile layout");
-        DrawCommandLine("/clock preset classic|minimal|gold|retro", "Select a preset preview");
+        DrawCommandLine("/clock <timezone1> to <timezone2>", "Compare the current time between two timezones");
         DrawCommandLine("/clock lock | /clock unlock", "Lock or unlock clock movement");
         DrawCommandLine("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Manage profiles");
 
@@ -1919,8 +2096,10 @@ public class ConfigWindow : Window, IDisposable
     {
         ImGui.Bullet();
         ImGui.TextColored(new Vector4(0.75f, 0.90f, 1f, 1f), command);
-        ImGui.SameLine();
-        ImGui.TextDisabled($"- {T(description)}");
+        ImGui.Indent(22f);
+        ImGui.TextDisabled(T(description));
+        ImGui.Unindent(22f);
+        ImGui.Spacing();
     }
 
     private void DrawTextSizeControl()

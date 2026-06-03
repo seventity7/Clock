@@ -1,5 +1,6 @@
 ﻿// may07 - cleaning UI
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
@@ -122,6 +123,7 @@ public class MainWindow : Window, IDisposable
 
         if (!profile.ShowLocalTime)
         {
+            DrawOverlayInfoLines(profile, contentOrigin.X, contentOrigin.Y, mainPanelSize.X);
             DrawMainPanel(profile, styleMetrics, parts, badgeText, badgeTextSize, layout, mainScale, badgeScale, contentOrigin, mainPanelSize, windowPos);
             return;
         }
@@ -158,6 +160,8 @@ public class MainWindow : Window, IDisposable
                 DrawLocalClockPanel(profile, localPanelPosVertical, localLayout.PanelSize, windowPos, false);
             }
 
+            var overlayTopY = MathF.Min(mainPanelPosVertical.Y, localPanelPosVertical.Y);
+            DrawOverlayInfoLines(profile, contentOrigin.X, overlayTopY, combinedWidth);
             return;
         }
 
@@ -182,6 +186,7 @@ public class MainWindow : Window, IDisposable
             );
 
             DrawMainClockContent(profile, styleMetrics, parts, badgeText, badgeTextSize, layout, mainScale, badgeScale, mainPanelPos, mainPanelSize, windowPos);
+            DrawOverlayInfoLines(profile, contentOrigin.X, MathF.Min(localPanelPosInside.Y, mainPanelPos.Y), combinedSize.X);
             return;
         }
 
@@ -199,8 +204,118 @@ public class MainWindow : Window, IDisposable
             contentOrigin.Y + localLayout.PanelSize.Y + SeparateLocalPanelGap
         );
 
+        DrawOverlayInfoLines(profile, contentOrigin.X, MathF.Min(localPanelPos.Y, mainPanelPosOutside.Y), totalContentWidth);
         DrawMainPanel(profile, styleMetrics, parts, badgeText, badgeTextSize, layout, mainScale, badgeScale, mainPanelPosOutside, mainPanelSize, windowPos);
     }
+
+
+    private void DrawOverlayInfoLines(ClockProfile profile, float x, float panelTopY, float width)
+    {
+        var lines = BuildOverlayInfoLines();
+        if (lines.Count == 0)
+            return;
+
+        var lineHeights = lines.Select(line => ImGui.GetTextLineHeight() * line.Scale).ToArray();
+        var fullHeight = lineHeights.Sum() + MathF.Max(0, lines.Count - 1) * 1.0f;
+        var cursorY = panelTopY - fullHeight - 3.0f;
+        var drawList = ImGui.GetForegroundDrawList();
+
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var line = lines[i];
+            var size = CalculateScaledTextSize(line.Text, line.Scale);
+            var lineX = x + MathF.Floor((width - size.X) * 0.5f);
+            var lineStyle = GetStyleMetrics(line.DisplayStyle);
+            var shadow = line.ShowShadowText ? line.ShadowColor : new Vector4(0, 0, 0, 0);
+            DrawOutlinedTextScaledOnList(drawList, line.Text, new Vector2(lineX, cursorY - line.VerticalOffset), line.Scale, line.TextColor, shadow, lineStyle);
+            cursorY += lineHeights[i] + 1.0f;
+        }
+    }
+
+    private List<OverlayLine> BuildOverlayInfoLines()
+    {
+        var lines = new List<OverlayLine>();
+
+        if (plugin.Configuration.ShowNextAlarmOnOverlay && TryBuildNextAlarmLine(out var alarmLine))
+            lines.Add(new OverlayLine(alarmLine, Math.Clamp(plugin.Configuration.NextAlarmOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.NextAlarmOverlayVerticalOffset, plugin.Configuration.NextAlarmOverlayTextColor, plugin.Configuration.NextAlarmOverlayShadowColor, plugin.Configuration.NextAlarmOverlayDisplayStyle, plugin.Configuration.NextAlarmOverlayShowShadowText));
+
+        if (plugin.Configuration.ShowMaintenanceOnOverlay && TryBuildMaintenanceLine(out var maintenanceLine))
+            lines.Add(new OverlayLine(maintenanceLine, Math.Clamp(plugin.Configuration.MaintenanceOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.MaintenanceOverlayVerticalOffset, plugin.Configuration.MaintenanceOverlayTextColor, plugin.Configuration.MaintenanceOverlayShadowColor, plugin.Configuration.MaintenanceOverlayDisplayStyle, plugin.Configuration.MaintenanceOverlayShowShadowText));
+
+        return lines;
+    }
+
+    private bool TryBuildNextAlarmLine(out string line)
+    {
+        line = string.Empty;
+        var alarms = plugin.Configuration.Alarms;
+        if (alarms == null || alarms.Count == 0)
+            return false;
+
+        var now = DateTime.UtcNow;
+        AlarmEntry? best = null;
+        DateTime bestUtc = DateTime.MaxValue;
+
+        foreach (var alarm in alarms)
+        {
+            if (!alarm.Enabled)
+                continue;
+
+            var pendingSnooze = alarm.SnoozedUntilUtc > DateTime.MinValue && !alarm.SnoozeTriggered;
+            if (alarm.HasTriggered && !pendingSnooze)
+                continue;
+
+            if (!AlarmConfigurationService.TryGetPendingTriggerUtc(alarm, out var utc))
+                continue;
+
+            if (utc < now.AddSeconds(-2))
+                continue;
+
+            if (utc < bestUtc)
+            {
+                bestUtc = utc;
+                best = alarm;
+            }
+        }
+
+        if (best == null)
+            return false;
+
+        line = $"Alarm: {FormatDigitalDuration(bestUtc - now)}";
+        return true;
+    }
+
+    private bool TryBuildMaintenanceLine(out string line)
+    {
+        line = string.Empty;
+        if (!plugin.Configuration.HasDetectedMaintenanceTime || plugin.Configuration.DetectedMaintenanceStartUtc <= DateTime.MinValue)
+            return false;
+
+        var now = DateTime.UtcNow;
+        var startUtc = DateTime.SpecifyKind(plugin.Configuration.DetectedMaintenanceStartUtc, DateTimeKind.Utc);
+        var localStart = TimeZoneInfo.ConvertTimeFromUtc(startUtc, TimeZoneInfo.Local);
+        if (localStart.Date != DateTime.Now.Date)
+            return false;
+
+        var diff = startUtc - now;
+        var timeText = diff.TotalSeconds > 0
+            ? FormatDigitalDuration(diff)
+            : "now";
+
+        line = $"Maintenance: {timeText}";
+        return true;
+    }
+
+    private static string FormatDigitalDuration(TimeSpan time)
+    {
+        if (time.TotalSeconds < 0)
+            time = TimeSpan.Zero;
+
+        var hours = (int)Math.Floor(time.TotalHours);
+        return $"{hours:D2}:{time.Minutes:D2}:{time.Seconds:D2}";
+    }
+
+    private readonly record struct OverlayLine(string Text, float Scale, float VerticalOffset, Vector4 TextColor, Vector4 ShadowColor, ClockDisplayStyle DisplayStyle, bool ShowShadowText);
 
     public override void PostDraw()
     {
@@ -992,6 +1107,35 @@ public class MainWindow : Window, IDisposable
         ImGui.TextColored(textColor, text);
 
         ImGui.SetWindowFontScale(1.0f);
+    }
+
+
+    private static void DrawOutlinedTextScaledOnList(ImDrawListPtr drawList, string text, Vector2 basePos, float scale, Vector4 textColor, Vector4 outlineColor, StyleMetrics styleMetrics)
+    {
+        var font = ImGui.GetFont();
+        var fontSize = ImGui.GetFontSize() * scale;
+
+        if (outlineColor.W > 0.0f)
+        {
+            var outline = styleMetrics.OutlineOffset * scale;
+            var outlineColorU32 = ImGui.GetColorU32(outlineColor);
+            var offsets = new[]
+            {
+                new Vector2(-outline, 0f),
+                new Vector2( outline, 0f),
+                new Vector2( 0f,-outline),
+                new Vector2( 0f, outline),
+                new Vector2(-outline,-outline),
+                new Vector2( outline,-outline),
+                new Vector2(-outline, outline),
+                new Vector2( outline, outline),
+            };
+
+            foreach (var offset in offsets)
+                drawList.AddText(font, fontSize, basePos + offset, outlineColorU32, text);
+        }
+
+        drawList.AddText(font, fontSize, basePos, ImGui.GetColorU32(textColor), text);
     }
 
     private static Vector2 CalculateScaledTextSize(string text, float scale)
