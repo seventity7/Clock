@@ -117,6 +117,8 @@ public static class AlarmConfigurationService
             SnoozeMinutes = Math.Clamp(configuration.AlarmEditorSnoozeMinutes, 1, 120),
             RepeatMode = configuration.AlarmEditorRepeatMode
         });
+
+        configuration.AlarmEditorDateOverrideText = string.Empty;
     }
 
     public static bool UpdateFromEditor(Configuration configuration, Guid alarmId, string alarmTimeZoneId)
@@ -171,6 +173,15 @@ public static class AlarmConfigurationService
         var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZoneId);
         var year = zoneNow.Year;
         var month = zoneNow.Month;
+        // Chat time conversion can pre-fill an alarm for a future date, so this override keeps month/year intact while the editor still shows the normal day control.
+        if (!string.IsNullOrWhiteSpace(configuration.AlarmEditorDateOverrideText) &&
+            DateTime.TryParseExact(configuration.AlarmEditorDateOverrideText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateOverride))
+        {
+            year = dateOverride.Year;
+            month = dateOverride.Month;
+            configuration.AlarmEditorDay = dateOverride.Day;
+        }
+
         var maxDay = DateTime.DaysInMonth(year, month);
 
         configuration.AlarmEditorDay = Math.Clamp(configuration.AlarmEditorDay, 1, maxDay);

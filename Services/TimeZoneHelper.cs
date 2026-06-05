@@ -57,10 +57,29 @@ public static class TimeZoneHelper
         ("mountain", "Mountain Standard Time", "America/Denver"),
         ("denver", "Mountain Standard Time", "America/Denver"),
 
+        ("cst", "Central Standard Time", "America/Chicago"),
+        ("cdt", "Central Standard Time", "America/Chicago"),
+        ("central", "Central Standard Time", "America/Chicago"),
+        ("chicago", "Central Standard Time", "America/Chicago"),
+
+        ("cet", "W. Europe Standard Time", "Europe/Berlin"),
+        ("cest", "W. Europe Standard Time", "Europe/Berlin"),
+        ("berlin", "W. Europe Standard Time", "Europe/Berlin"),
+
         ("acst", "AUS Central Standard Time", "Australia/Darwin"),
+        ("acdt", "AUS Central Standard Time", "Australia/Adelaide"),
         ("australia central", "AUS Central Standard Time", "Australia/Darwin"),
         ("australiacentral", "AUS Central Standard Time", "Australia/Darwin"),
         ("darwin", "AUS Central Standard Time", "Australia/Darwin"),
+
+        ("aest", "AUS Eastern Standard Time", "Australia/Sydney"),
+        ("aedt", "AUS Eastern Standard Time", "Australia/Sydney"),
+        ("sydney", "AUS Eastern Standard Time", "Australia/Sydney"),
+
+        ("kst", "Korea Standard Time", "Asia/Seoul"),
+        ("sgt", "Singapore Standard Time", "Asia/Singapore"),
+        ("hkt", "China Standard Time", "Asia/Hong_Kong"),
+        ("ist", "India Standard Time", "Asia/Kolkata"),
 
         ("brt", "E. South America Standard Time", "America/Sao_Paulo"),
         ("brazil", "E. South America Standard Time", "America/Sao_Paulo"),

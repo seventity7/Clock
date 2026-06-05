@@ -74,14 +74,17 @@ public sealed class CommandHintWindow : Window, IDisposable
 
     public override void PreDraw()
     {
-        // Anchored above the actual chat input when available. The fallback keeps the popup near
-        // the bottom-left area without depending on a specific chat addon size field.
+        // Keep the hints above the chat input. We do not read the ChatLog addon directly here,
+        // so the fallback leaves a larger bottom gap and only overlaps the scrollback area.
         var viewport = ImGui.GetMainViewport();
         var pos = anchor;
         if (pos.X <= 0f && pos.Y <= 0f)
-            pos = new Vector2(viewport.Pos.X + 24f, viewport.Pos.Y + viewport.Size.Y - lastSize.Y - 88f);
+            pos = new Vector2(viewport.Pos.X + 24f, viewport.Pos.Y + viewport.Size.Y - lastSize.Y - 168f);
         else
-            pos = new Vector2(pos.X, MathF.Max(viewport.Pos.Y + 24f, pos.Y - lastSize.Y - 8f));
+            pos = new Vector2(pos.X, MathF.Max(viewport.Pos.Y + 24f, pos.Y - lastSize.Y - 14f));
+
+        pos.X = MathF.Min(pos.X, viewport.Pos.X + viewport.Size.X - lastSize.X - 12f);
+        pos.X = MathF.Max(viewport.Pos.X + 12f, pos.X);
 
         ImGui.SetNextWindowPos(pos, ImGuiCond.Always);
 

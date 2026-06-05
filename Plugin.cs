@@ -10,6 +10,7 @@ using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Utility;
 using Dalamud.Interface.Windowing;
 using System.Text.RegularExpressions;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -38,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IToastGui toastGui;
     private readonly LodestoneMaintenanceService maintenanceService = new();
     private readonly ChatTimestampService chatTimestampService;
+    private readonly ChatTimeHoverService chatTimeHoverService;
 
     private bool hasAutoStarted;
     private bool wantedMainWindowOpen;
@@ -54,10 +56,12 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("Clock");
 
     public IDalamudPluginInterface PluginInterface => pluginInterface;
+    public IPluginLog Log => log;
 
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
     private CommandHintWindow CommandHintWindow { get; init; }
+    private ChatTimeHoverPopupWindow ChatTimeHoverPopupWindow { get; init; }
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -67,7 +71,8 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IChatGui chatGui,
         IToastGui toastGui,
-        IGameInteropProvider gameInteropProvider)
+        IGameInteropProvider gameInteropProvider,
+        IGameGui gameGui)
     {
         this.pluginInterface = pluginInterface;
         this.commandManager = commandManager;
@@ -85,12 +90,15 @@ public sealed class Plugin : IDalamudPlugin
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
         CommandHintWindow = new CommandHintWindow(T);
+        ChatTimeHoverPopupWindow = new ChatTimeHoverPopupWindow(Configuration, pluginInterface, log, T, SetupAlarmFromChatTime);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
         WindowSystem.AddWindow(CommandHintWindow);
+        WindowSystem.AddWindow(ChatTimeHoverPopupWindow);
 
         chatTimestampService = new ChatTimestampService(Configuration, gameInteropProvider, log);
+        chatTimeHoverService = new ChatTimeHoverService(Configuration, chatGui, log, T, ChatTimeHoverPopupWindow);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -124,9 +132,127 @@ public sealed class Plugin : IDalamudPlugin
     }
 
 
+
+    private void SetupAlarmFromChatTime(ChatTimeHoverService.ChatAlarmSetupRequest request)
+    {
+        log.Warning($"[Clock.ChatAlarmSetup] Plugin callback received. targetLocal={request.TargetLocal:yyyy-MM-dd HH:mm:ss}, targetZone='{request.TargetTimeZoneId}'.");
+        ConfigWindow.OpenToAlarmsTabFromChat(request.TargetLocal, request.TargetTimeZoneId);
+        log.Warning($"[Clock.ChatAlarmSetup] Config window requested. isOpen={ConfigWindow.IsOpen}.");
+    }
+
     public void RefreshChatTimestampSettings()
     {
         chatTimestampService.ApplyConfiguration();
+    }
+
+    public void PrintChatTimeHoverTestMessage()
+    {
+        // These local-only chat lines aim to give users a quick way to verify the whole hover pipeline without needing a real message in chat:
+        // single time parsing, range parsing, date context, tooltip display and alarm creation.
+        var (singleTime, rangeTime, venueDate) = BuildChatTimeHoverTestBits();
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("This is a test message showing how Time like {0} is detected. Please hover your mouse above the time and click it."), singleTime), "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("This is a second test message showing how Time like {0} is detected. Please hover your mouse above the time and click it."), rangeTime), "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Clock Venue is opening on Exo-Gob-W0-P00 {0} at {1}! And we have gone crazy with 50mil Giveaways and prizes!!"), venueDate, singleTime), "Clock");
+    }
+
+    private (string SingleTime, string RangeTime, string VenueDate) BuildChatTimeHoverTestBits()
+    {
+        // Test chat uses a different source timezone on purpose, otherwise the hover path can look like a no-op for the user.
+        var zoneId = PickChatTimeHoverTestSourceZone();
+        var startUtc = DateTime.UtcNow.AddHours(1);
+        var start = TimeZoneHelper.ConvertFromUtc(startUtc, zoneId);
+        if (start.Minute != 0 || start.Second != 0 || start.Millisecond != 0)
+        {
+            start = new DateTime(start.Year, start.Month, start.Day, start.Hour, 0, 0).AddHours(1);
+            startUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(start, DateTimeKind.Unspecified), TimeZoneHelper.GetTimeZone(zoneId));
+        }
+
+        var end = TimeZoneHelper.ConvertFromUtc(startUtc.AddHours(5), zoneId);
+        var shortZone = TimeZoneHelper.ToShortText(zoneId);
+        var single = $"{start:hhtt} {shortZone}".ToUpperInvariant();
+        var range = $"{start:hhtt}-{end:hhtt} {shortZone}".ToUpperInvariant();
+        var venueDate = FormatEnglishMonthDay(DateTime.Now.Date.AddDays(1));
+        return (single, range, venueDate);
+    }
+
+    private string PickChatTimeHoverTestSourceZone()
+    {
+        var primaryId = Configuration.SelectedTimeZoneId;
+        if (!TimeZoneHelper.TryResolveTimeZone(primaryId, out primaryId))
+            primaryId = TimeZoneInfo.Local.Id;
+
+        var nowUtc = DateTime.UtcNow;
+        var localOffset = TimeZoneInfo.Local.GetUtcOffset(nowUtc);
+        // Keep this list boring and OS-resolvable; the helper below tries both Windows and IANA ids so the same build works outside Windows dev boxes too.
+        var known = new[]
+        {
+            // This is intentionaly hard-coded. Is used only for the button `Test` for testing the option `Enable Chat Time Hover`.
+            (Windows: "GMT Standard Time", Iana: "Europe/London"),
+            (Windows: "W. Europe Standard Time", Iana: "Europe/Berlin"),
+            (Windows: "Romance Standard Time", Iana: "Europe/Paris"),
+            (Windows: "Tokyo Standard Time", Iana: "Asia/Tokyo"),
+            (Windows: "Singapore Standard Time", Iana: "Asia/Singapore"),
+            (Windows: "AUS Eastern Standard Time", Iana: "Australia/Sydney"),
+            (Windows: "UTC", Iana: "Etc/UTC"),
+        };
+
+        string? picked = null;
+        TimeSpan? pickedOffset = null;
+        foreach (var item in known)
+        {
+            var zoneId = ResolveForThisMachine(item.Windows, item.Iana);
+            if (string.IsNullOrWhiteSpace(zoneId) || string.Equals(zoneId, primaryId, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var offset = TimeZoneHelper.GetTimeZone(zoneId).GetUtcOffset(nowUtc);
+            if (offset < localOffset.Add(TimeSpan.FromHours(1)))
+                continue;
+
+            if (picked == null || pickedOffset == null || offset < pickedOffset.Value)
+            {
+                picked = zoneId;
+                pickedOffset = offset;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(picked))
+            return picked;
+
+        var fallback = ResolveForThisMachine("Tokyo Standard Time", "Asia/Tokyo");
+        if (!string.IsNullOrWhiteSpace(fallback) && !string.Equals(fallback, primaryId, StringComparison.OrdinalIgnoreCase))
+            return fallback;
+
+        return TimeZoneInfo.Local.Id;
+    }
+
+    private static string? ResolveForThisMachine(string windowsId, string ianaId)
+    {
+        if (TimeZoneHelper.TryResolveTimeZone(windowsId, out var resolved))
+            return resolved;
+
+        return TimeZoneHelper.TryResolveTimeZone(ianaId, out resolved)
+            ? resolved
+            : null;
+    }
+
+    private static string FormatEnglishMonthDay(DateTime date)
+    {
+        var day = date.Day;
+        var suffix = "th";
+        var teen = day % 100;
+        if (teen != 11 && teen != 12 && teen != 13)
+        {
+            var lastDigit = day % 10;
+            if (lastDigit == 1)
+                suffix = "st";
+            else if (lastDigit == 2)
+                suffix = "nd";
+            else if (lastDigit == 3)
+                suffix = "rd";
+        }
+
+        // The test string intentionally uses English month text because the parser supports it and it mirrors common venue ads.
+        return $"{date.ToString("MMMM", CultureInfo.InvariantCulture)} {day}{suffix}";
     }
 
     public void Dispose()
@@ -134,6 +260,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
 
         chatTimestampService.Dispose();
+        chatTimeHoverService.Dispose();
         maintenanceService.Dispose();
 
         pluginInterface.UiBuilder.Draw -= DrawUI;
@@ -164,7 +291,6 @@ public sealed class Plugin : IDalamudPlugin
 
         CheckReminders();
         MonitorCommandHints();
-
         MainWindow.IsOpen = wantedMainWindowOpen && !ShouldHideClock();
         WindowSystem.Draw();
     }
@@ -172,47 +298,23 @@ public sealed class Plugin : IDalamudPlugin
 
     private unsafe void MonitorCommandHints()
     {
-        try
-        {
-            if (!Configuration.CommandSuggestionEnabled)
-            {
-                CommandHintWindow.IsOpen = false;
-                return;
-            }
+        CommandHintWindow.IsOpen = false;
 
-            var input = GetActiveChatTextInput();
-            if (input == null)
-            {
-                CommandHintWindow.IsOpen = false;
-                return;
-            }
+        if (!Configuration.CommandSuggestionEnabled)
+            return;
 
-            var addon = input->OwnerAddon;
-            if (addon == null)
-                addon = input->ContainingAddon2;
+        var module = RaptureAtkModule.Instance();
+        if (module == null || !module->IsTextInputActive())
+            return;
 
-            if (addon == null || !string.Equals(addon->NameString.ToString(), "ChatLog", StringComparison.Ordinal))
-            {
-                CommandHintWindow.IsOpen = false;
-                return;
-            }
+        var typed = module->TextInput.RawInputString.ToString();
+        if (string.IsNullOrWhiteSpace(typed) || !typed.TrimStart().StartsWith("/clock", StringComparison.OrdinalIgnoreCase))
+            return;
 
-            var currentText = input->EvaluatedString.ToString();
-            if (!currentText.StartsWith("/clock", StringComparison.OrdinalIgnoreCase))
-            {
-                CommandHintWindow.IsOpen = false;
-                return;
-            }
-
-            var chatInputAnchor = new Vector2(addon->X + 12f, addon->Y + 336f);
-            CommandHintWindow.Update(currentText, chatInputAnchor);
-            CommandHintWindow.IsOpen = true;
-        }
-        catch (Exception ex)
-        {
-            CommandHintWindow.IsOpen = false;
-            log.Verbose($"Clock command hints failed: {ex.Message}");
-        }
+        // The input text comes from RaptureAtkModule's active text input state instead of an addon lookup.
+        // That keeps the hint list independent from chat addon names while still only opening when the user is actually typing a /clock command.
+        CommandHintWindow.Update(typed.TrimStart(), Vector2.Zero);
+        CommandHintWindow.IsOpen = true;
     }
 
     private unsafe AtkComponentTextInput* GetActiveChatTextInput()
@@ -842,16 +944,16 @@ public sealed class Plugin : IDalamudPlugin
                 return;
 
             case "add":
-            {
-                var name = string.IsNullOrWhiteSpace(value)
-                    ? $"Profile {Configuration.Profiles.Count + 1}"
-                    : value.Trim();
+                {
+                    var name = string.IsNullOrWhiteSpace(value)
+                        ? $"Profile {Configuration.Profiles.Count + 1}"
+                        : value.Trim();
 
-                Configuration.AddProfile(name);
-                Configuration.Save();
-                chatGui.Print($"Profile \"{Configuration.GetActiveProfile().Name}\" created.", "Clock");
-                return;
-            }
+                    Configuration.AddProfile(name);
+                    Configuration.Save();
+                    chatGui.Print($"Profile \"{Configuration.GetActiveProfile().Name}\" created.", "Clock");
+                    return;
+                }
 
             case "rename":
                 if (string.IsNullOrWhiteSpace(value))

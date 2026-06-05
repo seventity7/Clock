@@ -12,6 +12,7 @@ public partial class Configuration
     public bool AlarmEditorIsPm = false;
     public string AlarmEditorMessage = "";
     public string AlarmEditorLastLocalDateText = "";
+    public string AlarmEditorDateOverrideText = "";
     public int AlarmSoundId = 8;
     public bool AlarmEditorSnoozeEnabled = false;
     public int AlarmEditorSnoozeMinutes = 5;

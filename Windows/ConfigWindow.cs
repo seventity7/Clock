@@ -41,6 +41,7 @@ public class ConfigWindow : Window, IDisposable
     private static readonly Vector4 GoldTextColor = new(1f, 0.82f, 0.42f, 1f);
     private string timeZoneFilter = "";
     private string chatTimestampTimeZoneFilter = "";
+    private string chatTimeHoverTimeZoneFilter = "";
     private string countryTimeZoneFilter = "";
     private CountryTimeZoneOption? selectedCountryTimeZone;
     private bool favoriteTimezonesExpanded = true;
@@ -50,6 +51,8 @@ public class ConfigWindow : Window, IDisposable
     private string configurationPopupMessage = "";
     private bool openConfigurationPopupNextFrame;
     private string languageFilter = "";
+    private bool chatAlarmSetupPending;
+    private bool chatTimeHoverConfirmVisible;
 
     public ConfigWindow(Plugin plugin)
         : base("###ConfigWindow")
@@ -80,8 +83,39 @@ public class ConfigWindow : Window, IDisposable
 
     public void OpenToAlarmsTab()
     {
+        configuration.AlarmEditorDateOverrideText = string.Empty;
         requestedTab = ConfigTabRequest.Alarms;
         IsOpen = true;
+    }
+
+    public void OpenToAlarmsTabFromChat(DateTime targetLocal, string targetTimeZoneId)
+    {
+        plugin.Log.Warning($"[Clock.ChatAlarmSetup] ConfigWindow.OpenToAlarmsTabFromChat start. targetLocal={targetLocal:yyyy-MM-dd HH:mm:ss}, targetZone='{targetTimeZoneId}'.");
+        editingAlarmId = null;
+        editingAlarmTimeZoneId = string.IsNullOrWhiteSpace(targetTimeZoneId) ? configuration.SelectedTimeZoneId : targetTimeZoneId;
+
+        // Chat-created alarms carry a full date. Keep it as an override so the day picker does not silently snap back to the current month.
+        configuration.AlarmEditorDay = targetLocal.Day;
+        configuration.AlarmEditorDateOverrideText = targetLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        configuration.AlarmEditorMinute = targetLocal.Minute;
+        configuration.AlarmEditorMessage = T("Set up a description here");
+
+        if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
+        {
+            configuration.AlarmEditorIsPm = targetLocal.Hour >= 12;
+            var hour12 = targetLocal.Hour % 12;
+            configuration.AlarmEditorHour = hour12 == 0 ? 12 : hour12;
+        }
+        else
+        {
+            configuration.AlarmEditorHour = Math.Clamp(targetLocal.Hour, 0, 23);
+        }
+
+        chatAlarmSetupPending = true;
+        requestedTab = ConfigTabRequest.Alarms;
+        IsOpen = true;
+        configuration.Save();
+        plugin.Log.Warning($"[Clock.ChatAlarmSetup] ConfigWindow alarm editor prepared. day={configuration.AlarmEditorDay}, hour={configuration.AlarmEditorHour}, minute={configuration.AlarmEditorMinute}, isPm={configuration.AlarmEditorIsPm}, message='{configuration.AlarmEditorMessage}', editorZone='{editingAlarmTimeZoneId}', isOpen={IsOpen}.");
     }
 
     public override void PreDraw()
@@ -196,6 +230,8 @@ public class ConfigWindow : Window, IDisposable
 
         if (ImGui.Button("X", closeButtonSize))
         {
+            chatAlarmSetupPending = false;
+            configuration.AlarmEditorDateOverrideText = string.Empty;
             IsOpen = false;
             ImGui.SetCursorPos(savedCursor);
             return;
@@ -372,8 +408,31 @@ public class ConfigWindow : Window, IDisposable
         {
             DrawChatTimestampSettings();
         }, DrawChatTimestampHeaderRight);
+
+        Section(T("Chat Time Conversion"), () =>
+        {
+            DrawChatTimeHoverSettings();
+        }, DrawChatTimeConversionHeaderRight);
     }
 
+
+    private void DrawChatTimeConversionHeaderRight()
+    {
+        var lightRed = new Vector4(1f, 0.45f, 0.45f, 1f);
+        var red = new Vector4(1f, 0.12f, 0.12f, 1f);
+        var label = T("Experimental");
+        ImGui.TextColored(lightRed, label);
+
+        if (ImGui.IsItemHovered())
+        {
+            // This label is intentionally visible near the section title because chat hover conversion touches live chat rendering.
+            // The tooltip is here to set expectations before users enable it: it is opt-in, safe to try but may conflict with other chat plugins or have bugs.
+            ImGui.GetWindowDrawList().AddText(ImGui.GetItemRectMin(), ImGui.GetColorU32(red), label);
+            ImGui.BeginTooltip();
+            ImGui.TextUnformatted(T("This feature is completely experimental, it might or might not work well.\nIt will not break your game if you enable it but use it at your own risk.\nPlugin incompatibilities are expected to happen.\nPlease report any issues through the Dalamud Feedback button."));
+            ImGui.EndTooltip();
+        }
+    }
 
     private void DrawChatTimestampHeaderRight()
     {
@@ -425,6 +484,204 @@ public class ConfigWindow : Window, IDisposable
             ImGui.SetTooltip(T("Appearance Settings"));
     }
 
+
+    private void DrawChatTimeHoverSettings()
+    {
+        bool enabled = configuration.ChatTimeHoverEnabled;
+        if (ImGui.Checkbox(T("Enable chat time hover"), ref enabled))
+        {
+            // The experimental warning is only accepted after a "Yes".
+            if (enabled && !configuration.ChatTimeHoverExperimentalWarningAccepted)
+            {
+                chatTimeHoverConfirmVisible = true;
+                ImGui.OpenPopup($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm");
+            }
+            else
+            {
+                configuration.ChatTimeHoverEnabled = enabled;
+                if (!enabled)
+                    chatTimeHoverConfirmVisible = false;
+
+                configuration.SanitizeChatTimestampOptions();
+                configuration.Save();
+            }
+        }
+
+        ImGui.SameLine();
+        // While the first-enable prompt is open, dependent controls stay locked so the user cannot use it.
+        var hoverInputsLocked = !configuration.ChatTimeHoverEnabled || chatTimeHoverConfirmVisible;
+        if (hoverInputsLocked)
+            ImGui.BeginDisabled();
+
+        if (ImGui.Button(T("Test")))
+            plugin.PrintChatTimeHoverTestMessage();
+
+        if (hoverInputsLocked)
+            ImGui.EndDisabled();
+
+        Help(T("Detects chat times and shows your converted time."));
+
+        ImGui.Indent();
+
+        if (hoverInputsLocked)
+            ImGui.BeginDisabled();
+
+        var showAlarm = configuration.ChatTimeHoverShowAlarmSetupOption;
+        if (ImGui.Checkbox(T("Show alarm setup option"), ref showAlarm))
+        {
+            configuration.ChatTimeHoverShowAlarmSetupOption = showAlarm;
+            configuration.Save();
+        }
+        Help(T("Shows alarm setup only for future times."));
+
+        DrawChatTimeHoverTimezoneCombo();
+        Help(T("Timezone used for chat time conversions."));
+
+        var tooltipDuration = configuration.ChatTimeHoverTooltipDurationSeconds;
+        ImGui.SetNextItemWidth(180f);
+        if (ImGui.SliderFloat(T("Tooltip duration"), ref tooltipDuration, 2f, 5f, "%.1fs"))
+        {
+            configuration.ChatTimeHoverTooltipDurationSeconds = tooltipDuration;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+        }
+        Help(T("How long the clicked conversion tooltip stays visible."));
+
+        if (hoverInputsLocked)
+            ImGui.EndDisabled();
+
+        ImGui.Unindent();
+        DrawChatTimeHoverFirstEnablePrompt();
+    }
+
+    private void DrawChatTimeHoverFirstEnablePrompt()
+    {
+        if (!chatTimeHoverConfirmVisible)
+            return;
+
+        // Center the modal over this config window; using a real modal keeps the section layout stable underneath.
+        var center = ImGui.GetWindowPos() + ImGui.GetWindowSize() * 0.5f;
+        ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
+        ImGui.SetNextWindowSize(new Vector2(410f, 0f), ImGuiCond.Appearing);
+
+        if (!ImGui.BeginPopupModal($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoSavedSettings))
+        {
+            ImGui.OpenPopup($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm");
+            return;
+        }
+
+        var text = T("This feature is completely experimental. Plugin incompatibilities and bugs are expected to happen. This alert will not appear again once activated. Do you wish to activate this option?");
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 380f);
+        ImGui.TextUnformatted(text);
+        ImGui.PopTextWrapPos();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        var yesSize = new Vector2(86f, 24f);
+        var noSize = new Vector2(86f, 24f);
+        var gap = ImGui.GetStyle().ItemSpacing.X;
+        var width = ImGui.GetContentRegionAvail().X;
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0f, (width - yesSize.X - noSize.X - gap) * 0.5f));
+
+        if (ImGui.Button(T("Yes"), yesSize))
+        {
+            configuration.ChatTimeHoverEnabled = true;
+            configuration.ChatTimeHoverExperimentalWarningAccepted = true;
+            chatTimeHoverConfirmVisible = false;
+            configuration.SanitizeChatTimestampOptions();
+            configuration.Save();
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button(T("No"), noSize))
+        {
+            configuration.ChatTimeHoverEnabled = false;
+            chatTimeHoverConfirmVisible = false;
+            configuration.Save();
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void DrawChatTimeHoverTimezoneCombo()
+    {
+        ImGui.Text(T("Convert chat times to"));
+        ImGui.SameLine();
+
+        var configuredId = configuration.ChatTimeHoverTimeZoneId;
+        var currentLabel = string.IsNullOrWhiteSpace(configuredId)
+            ? T("Primary Timezone")
+            : TimeZoneHelper.GetComboLabel(configuredId);
+        var popupId = "ChatTimeHoverTimezonePopup";
+
+        if (ImGui.Button($"{currentLabel}  ▼##ChatTimeHoverTimezoneDropdownButton", new Vector2(260f, 0f)))
+            ImGui.OpenPopup(popupId);
+
+        var buttonMin = ImGui.GetItemRectMin();
+        var buttonMax = ImGui.GetItemRectMax();
+        var typedTimeZoneId = string.Empty;
+        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(chatTimeHoverTimeZoneFilter)
+            && TimeZoneHelper.TryResolveTimeZone(chatTimeHoverTimeZoneFilter, out typedTimeZoneId);
+
+        ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 360f : 320f), ImGuiCond.Always);
+
+        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        {
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputText("##ChatTimeHoverTimezoneFilter", ref chatTimeHoverTimeZoneFilter, 96);
+            ImGui.Separator();
+
+            if (ImGui.Selectable(T("Primary Timezone"), string.IsNullOrWhiteSpace(configuration.ChatTimeHoverTimeZoneId)))
+            {
+                configuration.ChatTimeHoverTimeZoneId = string.Empty;
+                configuration.Save();
+                chatTimeHoverTimeZoneFilter = "";
+                ImGui.CloseCurrentPopup();
+            }
+
+            if (hasTypedTimeZone)
+            {
+                bool typedSelected = string.Equals(configuration.ChatTimeHoverTimeZoneId, typedTimeZoneId, StringComparison.OrdinalIgnoreCase);
+                if (DrawTimeZoneSelectable(string.Format(CultureInfo.InvariantCulture, T("Use typed ID: {0}"), TimeZoneHelper.GetComboLabel(typedTimeZoneId)), typedSelected, typedTimeZoneId))
+                {
+                    configuration.ChatTimeHoverTimeZoneId = typedTimeZoneId;
+                    configuration.Save();
+                    chatTimeHoverTimeZoneFilter = "";
+                    ImGui.CloseCurrentPopup();
+                }
+
+                ImGui.Separator();
+            }
+
+            if (ImGui.BeginChild("##ChatTimeHoverTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            {
+                foreach (var timeZone in TimeZoneHelper.GetSystemTimeZones().OrderBy(timeZone => timeZone.BaseUtcOffset).ThenBy(timeZone => timeZone.Id, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!TimeZoneHelper.MatchesFilter(timeZone, chatTimeHoverTimeZoneFilter))
+                        continue;
+
+                    bool selected = string.Equals(configuration.ChatTimeHoverTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    {
+                        configuration.ChatTimeHoverTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                        configuration.Save();
+                        chatTimeHoverTimeZoneFilter = "";
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
+            }
+
+            ImGui.EndChild();
+            ImGui.EndPopup();
+        }
+    }
 
     private void DrawChatTimestampSettings()
     {
@@ -924,16 +1181,37 @@ public class ConfigWindow : Window, IDisposable
             var alarmInPast = !isEditingAlarm && IsAlarmEditorInPast(editorZone);
 
             ImGui.BeginDisabled(isEditingAlarm || alarmInPast);
+            var pulseAddAlarm = chatAlarmSetupPending && !isEditingAlarm && !alarmInPast;
+            var pushedButtonColors = 0;
+
             if (alarmInPast)
+            {
                 ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.55f, 0.08f, 0.08f, 0.85f));
+                pushedButtonColors++;
+            }
+            else if (pulseAddAlarm)
+            {
+                var wave = (float)((Math.Sin(ImGui.GetTime() * 5.2) + 1.0) * 0.5);
+                var baseGold = new Vector4(0.86f + 0.12f * wave, 0.58f + 0.28f * wave, 0.08f, 0.95f);
+                var hoverGold = new Vector4(1.0f, 0.76f + 0.18f * wave, 0.18f, 1f);
+                var activeGold = new Vector4(0.72f + 0.18f * wave, 0.46f + 0.22f * wave, 0.06f, 1f);
+                ImGui.PushStyleColor(ImGuiCol.Button, baseGold);
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hoverGold);
+                ImGui.PushStyleColor(ImGuiCol.ButtonActive, activeGold);
+                pushedButtonColors += 3;
+            }
+
             if (ImGui.Button(T("Add Alarm")))
             {
+                plugin.Log.Warning($"[Clock.ChatAlarmSetup] Add Alarm clicked. pendingFromChat={chatAlarmSetupPending}, editorZone='{editorZone}', day={configuration.AlarmEditorDay}, hour={configuration.AlarmEditorHour}, minute={configuration.AlarmEditorMinute}, isPm={configuration.AlarmEditorIsPm}.");
                 AlarmConfigurationService.AddFromEditor(configuration, editorZone);
                 configuration.AlarmEditorRepeatMode = AlarmRepeatMode.None;
+                chatAlarmSetupPending = false;
                 configuration.Save();
             }
-            if (alarmInPast)
-                ImGui.PopStyleColor();
+
+            if (pushedButtonColors > 0)
+                ImGui.PopStyleColor(pushedButtonColors);
             ImGui.EndDisabled();
             if (alarmInPast && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 ImGui.SetTooltip(T("Can't create a Alarm for the past!"));
@@ -1695,6 +1973,13 @@ public class ConfigWindow : Window, IDisposable
         var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorZone);
         var year = zoneNow.Year;
         var month = zoneNow.Month;
+        if (!string.IsNullOrWhiteSpace(configuration.AlarmEditorDateOverrideText) &&
+            DateTime.TryParseExact(configuration.AlarmEditorDateOverrideText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateOverride))
+        {
+            year = dateOverride.Year;
+            month = dateOverride.Month;
+        }
+
         var maxDay = DateTime.DaysInMonth(year, month);
 
         configuration.AlarmEditorDay = Math.Clamp(configuration.AlarmEditorDay, 1, maxDay);
@@ -1722,6 +2007,13 @@ public class ConfigWindow : Window, IDisposable
         var minuteItems = Enumerable.Range(0, 60).Select(m => m.ToString("00")).ToArray();
 
         ImGui.Text(T("Alarm Date/Time"));
+        if (chatAlarmSetupPending)
+        {
+            ImGui.SameLine();
+            var wave = (float)((Math.Sin(ImGui.GetTime() * 4.0) + 1.0) * 0.5);
+            var color = new Vector4(0.30f + 0.18f * wave, 1.0f, 0.42f + 0.28f * wave, 1.0f);
+            ImGui.TextColored(color, T("Alarm setup through chat detection. Please finish it."));
+        }
 
         float dayWidth = 64f;
         float hourWidth = 52f;
@@ -1737,6 +2029,9 @@ public class ConfigWindow : Window, IDisposable
                 if (ImGui.Selectable(dayItems[i], selected))
                 {
                     configuration.AlarmEditorDay = i + 1;
+                    if (!string.IsNullOrWhiteSpace(configuration.AlarmEditorDateOverrideText) &&
+                        DateTime.TryParseExact(configuration.AlarmEditorDateOverrideText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var pickedDate))
+                        configuration.AlarmEditorDateOverrideText = new DateTime(pickedDate.Year, pickedDate.Month, configuration.AlarmEditorDay).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                     configuration.Save();
                 }
 
@@ -2183,7 +2478,9 @@ public class ConfigWindow : Window, IDisposable
 
     private static void Help(string text)
     {
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X);
         ImGui.TextDisabled(text);
+        ImGui.PopTextWrapPos();
     }
 
     private bool DrawCombo(string label, string[] items, ref int currentIndex, bool translateItems = true)

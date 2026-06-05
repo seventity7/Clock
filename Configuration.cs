@@ -194,6 +194,11 @@ public partial class Configuration : IPluginConfiguration
     public bool ChatTimestampShowAmPm = true;
     public Vector4 ChatTimestampColor = new(0.72f, 0.42f, 1.00f, 1.00f);
     public string ChatTimestampTimeZoneId = "";
+    public bool ChatTimeHoverEnabled = false;  // Chat time hover is opt-in and the first-enable warning is persisted separately so clicking "No" doesn't enable the option
+    public bool ChatTimeHoverShowAlarmSetupOption = true;
+    public bool ChatTimeHoverExperimentalWarningAccepted = false;
+    public string ChatTimeHoverTimeZoneId = "";
+    public float ChatTimeHoverTooltipDurationSeconds = 3f;
 
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
     public string SelectedTimeZoneId = "";
@@ -371,6 +376,11 @@ public partial class Configuration : IPluginConfiguration
 
         if (!string.IsNullOrWhiteSpace(ChatTimestampTimeZoneId) && !TimeZoneHelper.TryResolveTimeZone(ChatTimestampTimeZoneId, out ChatTimestampTimeZoneId))
             ChatTimestampTimeZoneId = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(ChatTimeHoverTimeZoneId) && !TimeZoneHelper.TryResolveTimeZone(ChatTimeHoverTimeZoneId, out ChatTimeHoverTimeZoneId))
+            ChatTimeHoverTimeZoneId = string.Empty;
+
+        ChatTimeHoverTooltipDurationSeconds = Math.Clamp(ChatTimeHoverTooltipDurationSeconds, 2f, 5f);
     }
 
     public ClockProfile GetActiveProfile()

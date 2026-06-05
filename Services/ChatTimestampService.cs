@@ -17,6 +17,7 @@ public sealed unsafe class ChatTimestampService : IDisposable
 
     private readonly Configuration config;
     private readonly IPluginLog pluginLog;
+    private readonly IGameInteropProvider interopProvider;
 
     // Native timestamp formatter used by the game. The signature is a little odd,
     // but keeping it here makes it easier to compare with the client code later.
@@ -24,13 +25,13 @@ public sealed unsafe class ChatTimestampService : IDisposable
     private Hook<ApplyTextFormatDelegate>? formatTextHook;
 
     private Utf8String* cachedTimestampText;
+    private DateTime lastTimestampDetourLogUtc = DateTime.MinValue;
 
     public ChatTimestampService(Configuration configuration, IGameInteropProvider interopProvider, IPluginLog log)
     {
         config = configuration;
         pluginLog = log;
-
-        interopProvider.InitializeFromAttributes(this);
+        this.interopProvider = interopProvider;
 
         // Reuse the same native string instead of allocating one every time a chat line is formatted.
         cachedTimestampText = Utf8String.FromString(string.Empty);
@@ -45,12 +46,22 @@ public sealed unsafe class ChatTimestampService : IDisposable
 
         if (config.ShowCustomTimestampInChat)
         {
+            EnsureHookReady();
             formatTextHook?.Enable();
         }
         else
         {
             formatTextHook?.Disable();
         }
+    }
+
+
+    private void EnsureHookReady()
+    {
+        if (formatTextHook != null)
+            return;
+
+        interopProvider.InitializeFromAttributes(this);
     }
 
     public void Dispose()
@@ -62,8 +73,9 @@ public sealed unsafe class ChatTimestampService : IDisposable
     private byte* OnFormatText(RaptureTextModule* textModule, uint addonTextId, int unixTimestamp)
     {
         var isChatTimestamp = addonTextId is 7840 or 7841;
-
-        if (!isChatTimestamp || cachedTimestampText == null || !config.ShowCustomTimestampInChat)
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var looksLikeFreshChatLineTimestamp = unixTimestamp >= nowUnix - 180 && unixTimestamp <= nowUnix + 5;
+        if (!isChatTimestamp || !looksLikeFreshChatLineTimestamp || cachedTimestampText == null || !config.ShowCustomTimestampInChat)
             return formatTextHook!.Original(textModule, addonTextId, unixTimestamp);
 
         try
