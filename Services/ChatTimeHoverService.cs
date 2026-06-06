@@ -22,26 +22,44 @@ public sealed class ChatTimeHoverService : IDisposable
     private const uint ChatTimeLinkId = 0x434C4B54;
     private static readonly string AmPmPart = $@"a\.?m\.?|p\.?m\.?|am|pm|a|p|{GameAmSymbol}|{GamePmSymbol}";
     private static readonly string TimePart = @"(?:noon|midnight|(?:[01]?\d|2[0-3])(?:\s*[:h.]\s*[0-5]\d)?)";
-    private static readonly string ZonePart = @"(?:utc[+-]\d{1,2}(?::?\d{2})?|gmt[+-]\d{1,2}(?::?\d{2})?|[a-z]{2,5})";
+    private static readonly string ZoneCorePart = @"(?:utc[+-]\d{1,2}(?::?\d{2})?|gmt[+-]\d{1,2}(?::?\d{2})?|[a-z]{2,5})";
+    private static readonly string ZoneWrappedPart = $@"(?:[\(\[\{{]\s*)?(?:{ZoneCorePart})(?:\s*[\)\]\}}])?";
+    // Zone wrappers are allowed since some texts often have things like "(PDT)" or "[EDT]", but only the clean zone code will be captured.
+    private static readonly string ZoneCapturePart = $@"(?:[\(\[\{{]\s*)?(?<zone>{ZoneCorePart})(?:\s*[\)\]\}}])?";
     private static readonly string MonthPart = @"(?:jan(?:uary|eiro|vier)?|fev(?:ereiro|rier)?|feb(?:ruary|ruar)?|f[eé]v(?:rier)?|mar(?:ch|[cç]o|s)?|m[aä]rz|maerz|apr(?:il)?|abr(?:il)?|avr(?:il)?|may|mai(?:o)?|jun(?:e|ho|i)?|jul(?:y|ho|i|let)?|aug(?:ust|osto)?|ago(?:sto)?|aou?t|sep(?:t(?:ember|embre)?|tembro)?|set(?:embro)?|oct(?:ober|obre)?|okt(?:ober)?|out(?:ubro)?|nov(?:ember|embre|embro)?|dec(?:ember|embre)?|d[eé]c(?:embre)?|dez(?:ember|embro)?)";
 
     // Ranges are checked before single times so a line like "7PM-10PM EST" becomes one single clickable span, avoiding showing two unrelated links.
     private static readonly Regex TimeRangeRegex = new(
-        $@"(?<![\p{{L}}\p{{N}}])(?<start>{TimePart})\s*(?<startampm>{AmPmPart})?\s*(?<sep>(?:-|–|—|@)|(?:till|to)\b|\s+(?={TimePart}\s*(?:{AmPmPart})?\s*{ZonePart}\b))\s*(?<end>{TimePart})\s*(?<endampm>{AmPmPart})?\s*(?<zone>{ZonePart})(?![\p{{L}}\p{{N}}])",
+        $@"(?<![\p{{L}}\p{{N}}])(?<start>{TimePart})\s*(?<startampm>{AmPmPart})?\s*(?<sep>(?:-|–|—|@)|(?:till|to)\b|\s+(?={TimePart}\s*(?:{AmPmPart})?\s*{ZoneWrappedPart}(?![\p{{L}}\p{{N}}])))\s*(?<end>{TimePart})\s*(?<endampm>{AmPmPart})?\s*{ZoneCapturePart}(?![\p{{L}}\p{{N}}])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // Single-time detection stays deliberately narrow; plain numbers without a known timezone are left alone to avoid noisy chat mutations.
     private static readonly Regex TimeMentionRegex = new(
-        $@"(?<![\p{{L}}\p{{N}}])(?<time>{TimePart})\s*(?<ampm>{AmPmPart})?\s*(?<zone>{ZonePart})(?![\p{{L}}\p{{N}}])",
+        $@"(?<![\p{{L}}\p{{N}}])(?<time>{TimePart})\s*(?<ampm>{AmPmPart})?\s*{ZoneCapturePart}(?![\p{{L}}\p{{N}}])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // Date text is only used as context for alarm creation; the date itself is not converted into a clickable chat region. Maybe in a future update.
+    // These extra date patterns are deliberately closer to "strict" parsing: useful venue/event text, but not every casual number in chat.
     private static readonly Regex MonthFirstDateRegex = new(
-        $@"\b(?<month>{MonthPart})[\.]?\s+(?<day>\d{{1,2}})(?:st|nd|rd|th|º|ª|e)?(?:,?\s*(?<year>20\d{{2}}))?\b",
+        $@"\b(?<month>{MonthPart})[\.]?\s+(?<day>\d{{1,2}})(?:st|nd|rd|th|º|ª|e)?(?:(?:\s*[,.-]\s*|\s+)(?<year>20\d{{2}}))?\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex DayFirstDateRegex = new(
-        $@"\b(?<day>\d{{1,2}})(?:st|nd|rd|th|º|ª|e)?\s+(?<month>{MonthPart})[\.]?(?:,?\s*(?<year>20\d{{2}}))?\b",
+        $@"\b(?<day>\d{{1,2}})(?:st|nd|rd|th|º|ª|e)?(?:\s+(?:of|de|do|du|der))?\s+(?<month>{MonthPart})[\.]?(?:(?:\s*[,.-]\s*|\s+)(?<year>20\d{{2}}))?\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    // These Chrono-inspired date shapes are kept as context helpers only; they do not make date-only text clickable by themselves.
+    // https://github.com/wanasit/chrono
+    private static readonly Regex IsoDateRegex = new(
+        @"\b(?<year>20\d{2})[-/](?<month>\d{1,2})[-/](?<day>\d{1,2})\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RelativeDateRegex = new(
+        @"\b(?<word>today|tonight|tomorrow|tmrw)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WeekdayDateRegex = new(
+        @"\b(?<modifier>this|next)?\s*(?<weekday>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly Configuration config;
@@ -208,6 +226,7 @@ public sealed class ChatTimeHoverService : IDisposable
         var matches = new List<ChatTimeMatch>();
         var used = new List<(int Start, int End)>();
 
+        // Time ranges are evaluated first so the single-time parser cannot steal part of a range before being able to build one clean clickable span.
         foreach (Match match in TimeRangeRegex.Matches(text))
         {
             if (!LooksLikeValidRange(match) || !TryBuildRangeMatch(text, match, targetTimeZoneId, out var converted))
@@ -217,6 +236,7 @@ public sealed class ChatTimeHoverService : IDisposable
             used.Add((match.Index, match.Index + match.Length));
         }
 
+        // Single times are handled after occupied range spans are marked to keep range and single-time matches from overlapping.
         foreach (Match match in TimeMentionRegex.Matches(text))
         {
             if (used.Any(x => match.Index >= x.Start && match.Index < x.End))
@@ -233,7 +253,7 @@ public sealed class ChatTimeHoverService : IDisposable
 
     private static bool LooksLikeValidRange(Match match)
     {
-        var zone = match.Groups["zone"].Value;
+        var zone = CleanZoneText(match.Groups["zone"].Value);
         if (string.IsNullOrWhiteSpace(zone))
             return false;
 
@@ -251,7 +271,7 @@ public sealed class ChatTimeHoverService : IDisposable
     {
         var timeText = match.Groups["time"].Value;
         var ampm = match.Groups["ampm"].Value;
-        var zone = match.Groups["zone"].Value;
+        var zone = CleanZoneText(match.Groups["zone"].Value);
 
         if (string.IsNullOrWhiteSpace(zone))
             return false;
@@ -273,7 +293,7 @@ public sealed class ChatTimeHoverService : IDisposable
 
         var timeText = match.Groups["time"].Value.Trim();
         var ampmText = match.Groups["ampm"].Value.Trim();
-        var zoneText = match.Groups["zone"].Value.Trim();
+        var zoneText = CleanZoneText(match.Groups["zone"].Value);
 
         if (!TryResolveSourceTimeZone(zoneText, out var sourceTimeZoneId, out var sourceLabel))
             return false;
@@ -313,7 +333,7 @@ public sealed class ChatTimeHoverService : IDisposable
         var endText = match.Groups["end"].Value.Trim();
         var startAmPm = match.Groups["startampm"].Value.Trim();
         var endAmPm = match.Groups["endampm"].Value.Trim();
-        var zoneText = match.Groups["zone"].Value.Trim();
+        var zoneText = CleanZoneText(match.Groups["zone"].Value);
 
         if (string.IsNullOrWhiteSpace(startAmPm) && !string.IsNullOrWhiteSpace(endAmPm))
             startAmPm = endAmPm;
@@ -420,14 +440,81 @@ public sealed class ChatTimeHoverService : IDisposable
             if (match.Groups["year"].Success && int.TryParse(match.Groups["year"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedYear))
                 year = parsedYear;
 
-            if (month < 1 || month > 12 || day < 1 || day > DateTime.DaysInMonth(year, month))
+            if (TryMakeDate(year, month, day, out date))
+                return true;
+        }
+
+        foreach (Match match in IsoDateRegex.Matches(text))
+        {
+            if (!int.TryParse(match.Groups["year"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var year) ||
+                !int.TryParse(match.Groups["month"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var month) ||
+                !int.TryParse(match.Groups["day"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var day))
                 continue;
 
-            date = new DateTime(year, month, day);
+            if (TryMakeDate(year, month, day, out date))
+                return true;
+        }
+
+        foreach (Match match in RelativeDateRegex.Matches(text))
+        {
+            var word = match.Groups["word"].Value.ToLowerInvariant();
+            date = word is "tomorrow" or "tmrw" ? fallbackDate.AddDays(1) : fallbackDate;
+            return true;
+        }
+
+        foreach (Match match in WeekdayDateRegex.Matches(text))
+        {
+            if (!TryWeekdayNumber(match.Groups["weekday"].Value, out var targetDay))
+                continue;
+
+            var modifier = match.Groups["modifier"].Value;
+            date = ResolveWeekdayDate(fallbackDate, targetDay, modifier);
             return true;
         }
 
         return false;
+    }
+
+    private static bool TryMakeDate(int year, int month, int day, out DateTime date)
+    {
+        date = default;
+        if (month < 1 || month > 12 || day < 1 || year < 2000 || year > 2099 || day > DateTime.DaysInMonth(year, month))
+            return false;
+
+        date = new DateTime(year, month, day);
+        return true;
+    }
+
+    private static DateTime ResolveWeekdayDate(DateTime fallbackDate, DayOfWeek targetDay, string modifier)
+    {
+        // Weekday text is resolved from the message/source timezone date so stuff like "Friday 8PM EST" behaves like the author meant, not like the user local date.
+        var delta = ((int)targetDay - (int)fallbackDate.DayOfWeek + 7) % 7;
+        if (modifier.Equals("next", StringComparison.OrdinalIgnoreCase))
+            delta = delta == 0 ? 7 : delta + 7;
+
+        return fallbackDate.AddDays(delta);
+    }
+
+    private static bool TryWeekdayNumber(string text, out DayOfWeek weekday)
+    {
+        weekday = DayOfWeek.Sunday;
+        var key = text.Trim().ToLowerInvariant();
+        if (key.Length > 3)
+            key = key[..3];
+
+        weekday = key switch
+        {
+            "sun" => DayOfWeek.Sunday,
+            "mon" => DayOfWeek.Monday,
+            "tue" => DayOfWeek.Tuesday,
+            "wed" => DayOfWeek.Wednesday,
+            "thu" => DayOfWeek.Thursday,
+            "fri" => DayOfWeek.Friday,
+            "sat" => DayOfWeek.Saturday,
+            _ => DayOfWeek.Sunday
+        };
+
+        return key is "sun" or "mon" or "tue" or "wed" or "thu" or "fri" or "sat";
     }
 
     private static bool TryMonthNumber(string monthText, out int month)
@@ -473,8 +560,16 @@ public sealed class ChatTimeHoverService : IDisposable
     private static bool TryResolveSourceTimeZone(string zoneText, out string sourceTimeZoneId, out string sourceLabel)
     {
         sourceTimeZoneId = string.Empty;
+        zoneText = CleanZoneText(zoneText);
         sourceLabel = zoneText.ToUpperInvariant();
         return TimeZoneHelper.TryResolveTimeZone(zoneText, out sourceTimeZoneId);
+    }
+
+    private static string CleanZoneText(string zoneText)
+    {
+        // Event/news texts often wraps timezone codes like "(PDT)" or "[EDT]"; strip only the wrapper and keep the actual timezone token.
+        // The resolver will still get the original code/offset without plugin-specific aliases.
+        return (zoneText ?? string.Empty).Trim().Trim('(', ')', '[', ']', '{', '}').Trim();
     }
 
     private static string FormatTime(DateTime time, string label)
@@ -533,6 +628,8 @@ public sealed class ChatTimeHoverService : IDisposable
 
     private static string KeyFor(string text)
     {
+        // Normalize spacing before using the detected text as a cache key; chat payloads can carry odd spacing/newlines
+        // but the click lookup should still match the same parsed time/date entry.
         return Regex.Replace(text ?? string.Empty, @"\s+", " ").Trim();
     }
 
@@ -546,7 +643,8 @@ public sealed class ChatTimeHoverService : IDisposable
         foreach (var key in recentMatches.Where(x => x.Value.StoredAtUtc < cutoff).Select(x => x.Key).ToArray())
             recentMatches.Remove(key);
     }
-
+    // Keep the parsed chat span separate from the alarm request: the tooltip needs display/conversion details,
+    // while alarm creation only needs the final target time and timezone to pre-fill the editor safely.
     public readonly record struct ChatTimeMatch(int Index, int Length, string SourceDisplay, string TargetDisplay, string DifferenceText, DateTime TargetLocal, DateTime TargetUtc, string TargetTimeZoneId);
 
     public readonly record struct ChatAlarmSetupRequest(DateTime TargetLocal, string TargetTimeZoneId);

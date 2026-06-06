@@ -8,9 +8,6 @@ using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 
 namespace Clock.Services;
-
-// code rewrited to avoid compatibility issues from the old code idea. Nothing hard-coded just native system.
-// May 21 01:02 BRT - Reinforced/Edited part of the code
 public sealed unsafe class ChatTimestampService : IDisposable
 {
     private delegate byte* ApplyTextFormatDelegate(RaptureTextModule* raptureTextModule, uint addonTextId, int value);

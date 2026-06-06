@@ -135,9 +135,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void SetupAlarmFromChatTime(ChatTimeHoverService.ChatAlarmSetupRequest request)
     {
-        log.Warning($"[Clock.ChatAlarmSetup] Plugin callback received. targetLocal={request.TargetLocal:yyyy-MM-dd HH:mm:ss}, targetZone='{request.TargetTimeZoneId}'.");
         ConfigWindow.OpenToAlarmsTabFromChat(request.TargetLocal, request.TargetTimeZoneId);
-        log.Warning($"[Clock.ChatAlarmSetup] Config window requested. isOpen={ConfigWindow.IsOpen}.");
     }
 
     public void RefreshChatTimestampSettings()
@@ -183,10 +181,10 @@ public sealed class Plugin : IDalamudPlugin
 
         var nowUtc = DateTime.UtcNow;
         var localOffset = TimeZoneInfo.Local.GetUtcOffset(nowUtc);
+        // Used only by the Test button for generated examples readable by the parser. Does not affect real chat detection.
         // Keep this list boring and OS-resolvable; the helper below tries both Windows and IANA ids so the same build works outside Windows dev boxes too.
         var known = new[]
         {
-            // This is intentionaly hard-coded. Is used only for the button `Test` for testing the option `Enable Chat Time Hover`.
             (Windows: "GMT Standard Time", Iana: "Europe/London"),
             (Windows: "W. Europe Standard Time", Iana: "Europe/Berlin"),
             (Windows: "Romance Standard Time", Iana: "Europe/Paris"),
@@ -317,6 +315,8 @@ public sealed class Plugin : IDalamudPlugin
         CommandHintWindow.IsOpen = true;
     }
 
+    // This only reads the currently focused chat text input so command suggestions can follow what the user is typing.
+    // It should avoid addon-name lookups and does not write into the game UI; callers will still null-check the pointer before using it.
     private unsafe AtkComponentTextInput* GetActiveChatTextInput()
     {
         var module = RaptureAtkModule.Instance();
@@ -1026,6 +1026,8 @@ public sealed class Plugin : IDalamudPlugin
         PlayAlarmSoundEffect(Configuration.AlarmSoundId);
     }
 
+    // Uses the game's normal chat sound helper for alarm previews/triggers. The id is clamped to the known chat-sound range
+    // before calling into the client, so bad config values cannot request arbitrary sound ids.
     private unsafe void PlayAlarmSoundEffect(int soundId)
     {
         try

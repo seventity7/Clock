@@ -54,11 +54,11 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
         openedAt = DateTime.UtcNow;
         closeAt = openedAt.AddSeconds(Math.Clamp(configuration.ChatTimeHoverTooltipDurationSeconds, 2f, 5f));
 
+        // Keep the hover window near the click but as its own overlay so it does not steal layout space from chat or the config window.
         Position = ImGui.GetMousePos() + new Vector2(14f, 14f);
         PositionCondition = ImGuiCond.Always;
         IsOpen = true;
 
-        log.Warning($"[Clock.ChatAlarmSetup] Conversion popup opened. targetLocal={match.TargetLocal:yyyy-MM-dd HH:mm:ss}, targetUtc={match.TargetUtc:yyyy-MM-dd HH:mm:ss}, targetZone='{match.TargetTimeZoneId}', source='{match.SourceDisplay}', target='{match.TargetDisplay}'.");
     }
 
     private bool ShouldShowSetupButton(out string blockedReason)
@@ -170,9 +170,7 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
             ImGui.Separator();
             if (DrawSetupButton(popupWidth))
             {
-                log.Warning($"[Clock.ChatAlarmSetup] Popup setup action clicked. targetLocal={match.TargetLocal:yyyy-MM-dd HH:mm:ss}, targetUtc={match.TargetUtc:yyyy-MM-dd HH:mm:ss}, targetZone='{match.TargetTimeZoneId}', source='{match.SourceDisplay}', target='{match.TargetDisplay}'.");
                 setupAlarmFromChat(new ChatTimeHoverService.ChatAlarmSetupRequest(match.TargetLocal, match.TargetTimeZoneId));
-                log.Warning("[Clock.ChatAlarmSetup] Popup setup callback returned.");
                 IsOpen = false;
                 return;
             }

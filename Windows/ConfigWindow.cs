@@ -83,15 +83,18 @@ public class ConfigWindow : Window, IDisposable
 
     public void OpenToAlarmsTab()
     {
+        // Clear the chat-created alarm context when leaving this flow so normal alarm editing falls back to the primary timezone.
         configuration.AlarmEditorDateOverrideText = string.Empty;
+        editingAlarmTimeZoneId = null;
+        chatAlarmSetupPending = false;
         requestedTab = ConfigTabRequest.Alarms;
         IsOpen = true;
     }
 
     public void OpenToAlarmsTabFromChat(DateTime targetLocal, string targetTimeZoneId)
     {
-        plugin.Log.Warning($"[Clock.ChatAlarmSetup] ConfigWindow.OpenToAlarmsTabFromChat start. targetLocal={targetLocal:yyyy-MM-dd HH:mm:ss}, targetZone='{targetTimeZoneId}'.");
         editingAlarmId = null;
+        // When opened from chat conversion, the alarm editor temporarily uses the conversion target timezone instead of the primary timezone.
         editingAlarmTimeZoneId = string.IsNullOrWhiteSpace(targetTimeZoneId) ? configuration.SelectedTimeZoneId : targetTimeZoneId;
 
         // Chat-created alarms carry a full date. Keep it as an override so the day picker does not silently snap back to the current month.
@@ -115,7 +118,6 @@ public class ConfigWindow : Window, IDisposable
         requestedTab = ConfigTabRequest.Alarms;
         IsOpen = true;
         configuration.Save();
-        plugin.Log.Warning($"[Clock.ChatAlarmSetup] ConfigWindow alarm editor prepared. day={configuration.AlarmEditorDay}, hour={configuration.AlarmEditorHour}, minute={configuration.AlarmEditorMinute}, isPm={configuration.AlarmEditorIsPm}, message='{configuration.AlarmEditorMessage}', editorZone='{editingAlarmTimeZoneId}', isOpen={IsOpen}.");
     }
 
     public override void PreDraw()
@@ -208,10 +210,16 @@ public class ConfigWindow : Window, IDisposable
 
         var currentLanguageName = ClockLocalizationService.GetCultureDisplayName(configuration.UiLanguageCultureName);
         var languageButtonSize = new Vector2(Math.Clamp(ImGui.CalcTextSize(currentLanguageName).X + 18f, 78f, 148f), 21f);
+        var feedbackButtonSize = new Vector2(24, 21);
         var helpButtonSize = new Vector2(58, 21);
         var closeButtonSize = new Vector2(24, 21);
         var spacing = ImGui.GetStyle().ItemSpacing.X;
-        ImGui.SetCursorPos(new Vector2(windowSize.X - languageButtonSize.X - helpButtonSize.X - closeButtonSize.X - (spacing * 2f) - 8f, 4));
+        ImGui.SetCursorPos(new Vector2(windowSize.X - languageButtonSize.X - feedbackButtonSize.X - helpButtonSize.X - closeButtonSize.X - (spacing * 3f) - 8f, 4));
+
+        // Feedback button so users dont need to hunt through /xlplugins manually.
+        DrawFeedbackButton(feedbackButtonSize);
+
+        ImGui.SameLine();
 
         if (ImGui.Button($"{currentLanguageName}##ClockLanguageButton", languageButtonSize))
             ImGui.OpenPopup("ClockLanguagePopup");
@@ -230,13 +238,40 @@ public class ConfigWindow : Window, IDisposable
 
         if (ImGui.Button("X", closeButtonSize))
         {
+            // Closing the window also exits the chat-alarm setup flow so the next normal alarm edit is not stuck on the timezone from the conversion.
             chatAlarmSetupPending = false;
+            editingAlarmTimeZoneId = null;
             configuration.AlarmEditorDateOverrideText = string.Empty;
             IsOpen = false;
             ImGui.SetCursorPos(savedCursor);
             return;
         }
         ImGui.SetCursorPos(savedCursor);
+    }
+
+    private void DrawFeedbackButton(Vector2 size)
+    {
+        // This just opens Dalamud's own installed-plugin entry.
+        const string icon = "\uf7f5";
+        var cursor = ImGui.GetCursorScreenPos();
+        var hoveredColor = new Vector4(0.76f, 0.55f, 1f, 1f);
+        var iconColor = ImGui.GetStyle().Colors[(int)ImGuiCol.Text];
+
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hoveredColor);
+        if (ImGui.Button("##ClockFeedbackPluginInstaller", size))
+            // Just open Dalamud's installed-plugin page directly.
+            plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.InstalledPlugins, "Clock");
+        ImGui.PopStyleColor();
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            var iconSize = ImGui.CalcTextSize(icon);
+            var iconPos = cursor + (size - iconSize) * 0.5f;
+            ImGui.GetWindowDrawList().AddText(iconPos, ImGui.GetColorU32(iconColor), icon);
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(T("Send Feedback/Report issues"));
     }
 
     private void DrawLanguagePopup()
@@ -490,6 +525,7 @@ public class ConfigWindow : Window, IDisposable
         bool enabled = configuration.ChatTimeHoverEnabled;
         if (ImGui.Checkbox(T("Enable chat time hover"), ref enabled))
         {
+            // This feature touches live chat rendering, so the first-enable prompt makes the opt-in explicit before enabling possible plugin interactions.
             // The experimental warning is only accepted after a "Yes".
             if (enabled && !configuration.ChatTimeHoverExperimentalWarningAccepted)
             {
@@ -532,6 +568,17 @@ public class ConfigWindow : Window, IDisposable
             configuration.ChatTimeHoverShowAlarmSetupOption = showAlarm;
             configuration.Save();
         }
+
+        if (hoverInputsLocked)
+            ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        // Make the user aware that chat-created alarms use the conversion target timezone, which can differ from the normal primary timezone.
+        DrawChatTimeHoverAlarmSetupInfoIcon();
+
+        if (hoverInputsLocked)
+            ImGui.BeginDisabled();
+
         Help(T("Shows alarm setup only for future times."));
 
         DrawChatTimeHoverTimezoneCombo();
@@ -552,6 +599,30 @@ public class ConfigWindow : Window, IDisposable
 
         ImGui.Unindent();
         DrawChatTimeHoverFirstEnablePrompt();
+    }
+
+    private void DrawChatTimeHoverAlarmSetupInfoIcon()
+    {
+        const string icon = "\uf128";
+        var hovered = false;
+        var enabled = configuration.ChatTimeHoverEnabled;
+        var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            ImGui.TextColored(disabledColor, icon);
+            hovered = ImGui.IsItemHovered();
+
+            if (enabled && hovered)
+                ImGui.GetWindowDrawList().AddText(ImGui.GetItemRectMin(), ImGui.GetColorU32(GoldTextColor), icon);
+        }
+
+        if (enabled && hovered)
+        {
+            ImGui.BeginTooltip();
+            ImGui.TextUnformatted(T("When creating a alarm from the tooltip option,\nit will be set up for the timezone selected below"));
+            ImGui.EndTooltip();
+        }
     }
 
     private void DrawChatTimeHoverFirstEnablePrompt()
@@ -1203,10 +1274,10 @@ public class ConfigWindow : Window, IDisposable
 
             if (ImGui.Button(T("Add Alarm")))
             {
-                plugin.Log.Warning($"[Clock.ChatAlarmSetup] Add Alarm clicked. pendingFromChat={chatAlarmSetupPending}, editorZone='{editorZone}', day={configuration.AlarmEditorDay}, hour={configuration.AlarmEditorHour}, minute={configuration.AlarmEditorMinute}, isPm={configuration.AlarmEditorIsPm}.");
                 AlarmConfigurationService.AddFromEditor(configuration, editorZone);
                 configuration.AlarmEditorRepeatMode = AlarmRepeatMode.None;
                 chatAlarmSetupPending = false;
+                editingAlarmTimeZoneId = null;
                 configuration.Save();
             }
 
@@ -2120,7 +2191,10 @@ public class ConfigWindow : Window, IDisposable
 
     private string GetAlarmEditorTimeZone()
     {
-        return editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId;
+        if (editingAlarmId.HasValue || chatAlarmSetupPending)
+            return editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId;
+
+        return configuration.SelectedTimeZoneId;
     }
 
     private bool IsAlarmEditorInPast(string editorZone)
