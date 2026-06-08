@@ -8,7 +8,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Bryer-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordapp.com/users/896449611168874507)
 [![AGPL-3.0 License](https://img.shields.io/badge/⚖️%20License-AGPL--3.0-636e72?style=for-the-badge)](https://github.com/seventity7/clock?tab=AGPL-3.0-1-ov-file)
 
-Clock is a Dalamud plugin that adds a clean, customizable clock overlay to Final Fantasy XIV.
+`Clock` adds a clean, customizable clock overlay to Final Fantasy XIV.
 It helps you track different timezones, create alarms, compare times, customize chat timestamps and manage useful time tools directly in-game.
 
 </div>
