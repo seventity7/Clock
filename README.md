@@ -128,7 +128,7 @@ It helps you track different timezones, create alarms, compare times, customize 
 | 2️⃣ | Search for `Clock` |
 | 3️⃣ | Click **Install** |
 | 4️⃣ | Enable the plugin |
-| ✔ | Open the clock with `/clock` or settings with `/clock settings` |
+| ✔ | Open settings with `/clock` and control the overlay with `/clock on` / `/clock off` |
 
 </div>
 
@@ -214,10 +214,11 @@ It is useful when playing with people from different regions, helping everyone r
 
 | Command | Description |
 | --- | --- |
-| `/clock` | Toggle the clock overlay |
-| `/clock settings` | Open the settings window |
+| `/clock` | Open the settings window |
+| `/clock on` | Show the clock overlay |
+| `/clock off` | Hide the clock overlay |
 | `/clocksettings` | Open Clock settings/customizations |
-| `/alarms` | Open settings directly on the Alarms tab |
+| `/alarms` | Open alarm overlay |
 | `/clock timezone <timezone>` | Change the main clock timezone |
 | `/clock format 12\|24\|12s\|24s\|weekday\|date` | Change the time format |
 | `/clock colon default\|always\|hidden\|slow\|fast` | Change colon animation |
@@ -284,7 +285,7 @@ It is useful when playing with people from different regions, helping everyone r
 <a id="author"></a>
 <div align="center">
 
-### 👩‍💻 Author
+### 👩‍💻 Creator
 
 <table>
   <tr>

@@ -1,4 +1,5 @@
 using Dalamud.Configuration;
+using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin;
 using System;
 using System.Collections.Generic;
@@ -42,13 +43,26 @@ public enum ClockDisplayStyle
     Minimal = 1,
     StrongShadow = 2,
     SoftGlass = 3,
-    RetroPanel = 4
+    RetroPanel = 4,
+    Digital = 5,
+    Tech = 6,
+    Cartoon = 7,
+    Countdown = 8
 }
 
 public enum ClockLayoutMode
 {
     Horizontal = 0,
     Vertical = 1
+}
+
+public enum ClockTimeTextFont
+{
+    Default = 0,
+    Digital = 1,
+    Technology = 2,
+    Ka1 = 3,
+    Countdown = 4
 }
 
 public enum AlarmRepeatMode
@@ -72,7 +86,11 @@ public enum ClockPreset
     NeonPurple = 7,
     CasinoGold = 8,
     CompactTransparent = 9,
-    RaidMinimal = 10
+    RaidMinimal = 10,
+    Digital = 11,
+    Tech = 12,
+    Cartoon = 13,
+    Countdown = 14
 }
 
 public enum LocalTimePlacement
@@ -108,6 +126,16 @@ public sealed class ClockProfile
 
     public ClockDisplayStyle DisplayStyle = ClockDisplayStyle.Classic;
     public ClockLayoutMode LayoutMode = ClockLayoutMode.Horizontal;
+    public ClockTimeTextFont TimeTextFont = ClockTimeTextFont.Default;
+
+    public ClockDisplayStyle NextAlarmOverlayDisplayStyle = ClockDisplayStyle.Classic;
+    public bool NextAlarmOverlayShowShadowText = true;
+    public Vector4 NextAlarmOverlayTextColor = new(1f, 1f, 1f, 1f);
+    public Vector4 NextAlarmOverlayShadowColor = new(0f, 0f, 0f, 0.8f);
+    public ClockDisplayStyle MaintenanceOverlayDisplayStyle = ClockDisplayStyle.Classic;
+    public bool MaintenanceOverlayShowShadowText = true;
+    public Vector4 MaintenanceOverlayTextColor = new(1f, 1f, 1f, 1f);
+    public Vector4 MaintenanceOverlayShadowColor = new(0f, 0f, 0f, 0.8f);
 
     public bool ShowLocalTime = false;
     public ClockTimeFormat LocalTimeFormat = ClockTimeFormat.TwelveHour;
@@ -153,6 +181,15 @@ public sealed class ClockProfile
             BorderOpacity = BorderOpacity,
             DisplayStyle = DisplayStyle,
             LayoutMode = LayoutMode,
+            TimeTextFont = TimeTextFont,
+            NextAlarmOverlayDisplayStyle = NextAlarmOverlayDisplayStyle,
+            NextAlarmOverlayShowShadowText = NextAlarmOverlayShowShadowText,
+            NextAlarmOverlayTextColor = NextAlarmOverlayTextColor,
+            NextAlarmOverlayShadowColor = NextAlarmOverlayShadowColor,
+            MaintenanceOverlayDisplayStyle = MaintenanceOverlayDisplayStyle,
+            MaintenanceOverlayShowShadowText = MaintenanceOverlayShowShadowText,
+            MaintenanceOverlayTextColor = MaintenanceOverlayTextColor,
+            MaintenanceOverlayShadowColor = MaintenanceOverlayShadowColor,
             ShowLocalTime = ShowLocalTime,
             LocalTimeFormat = LocalTimeFormat,
             LocalTimePlacement = LocalTimePlacement,
@@ -176,12 +213,64 @@ public sealed class ClockProfile
             LocalTimeHorizontalOffset = LocalTimeHorizontalOffset
         };
     }
+
+    public void CopyFrom(ClockProfile source)
+    {
+        Name = source.Name;
+        ShowBorder = source.ShowBorder;
+        ShowIcon = source.ShowIcon;
+        ShowShadowText = source.ShowShadowText;
+        ShowIconBorder = source.ShowIconBorder;
+        ClockTextScale = source.ClockTextScale;
+        ClockTextColor = source.ClockTextColor;
+        ClockShadowColor = source.ClockShadowColor;
+        IconTextColor = source.IconTextColor;
+        IconBackgroundColor = source.IconBackgroundColor;
+        IconBorderColor = source.IconBorderColor;
+        IconBorderOpacity = source.IconBorderOpacity;
+        ClockBackgroundOpacity = source.ClockBackgroundOpacity;
+        ClockBackgroundColor = source.ClockBackgroundColor;
+        BorderColor = source.BorderColor;
+        BorderOpacity = source.BorderOpacity;
+        DisplayStyle = source.DisplayStyle;
+        LayoutMode = source.LayoutMode;
+        TimeTextFont = source.TimeTextFont;
+        NextAlarmOverlayDisplayStyle = source.NextAlarmOverlayDisplayStyle;
+        NextAlarmOverlayShowShadowText = source.NextAlarmOverlayShowShadowText;
+        NextAlarmOverlayTextColor = source.NextAlarmOverlayTextColor;
+        NextAlarmOverlayShadowColor = source.NextAlarmOverlayShadowColor;
+        MaintenanceOverlayDisplayStyle = source.MaintenanceOverlayDisplayStyle;
+        MaintenanceOverlayShowShadowText = source.MaintenanceOverlayShowShadowText;
+        MaintenanceOverlayTextColor = source.MaintenanceOverlayTextColor;
+        MaintenanceOverlayShadowColor = source.MaintenanceOverlayShadowColor;
+        ShowLocalTime = source.ShowLocalTime;
+        LocalTimeFormat = source.LocalTimeFormat;
+        LocalTimePlacement = source.LocalTimePlacement;
+        LocalTimeDisplayStyle = source.LocalTimeDisplayStyle;
+        LocalTimeShowBorder = source.LocalTimeShowBorder;
+        LocalTimeShowShadowText = source.LocalTimeShowShadowText;
+        LocalTimeShowIcon = source.LocalTimeShowIcon;
+        LocalTimeShowIconBorder = source.LocalTimeShowIconBorder;
+        LocalTimeTextScale = source.LocalTimeTextScale;
+        LocalTimeTextColor = source.LocalTimeTextColor;
+        LocalTimeShadowColor = source.LocalTimeShadowColor;
+        LocalTimeBackgroundColor = source.LocalTimeBackgroundColor;
+        LocalTimeBackgroundOpacity = source.LocalTimeBackgroundOpacity;
+        LocalTimeBorderColor = source.LocalTimeBorderColor;
+        LocalTimeIconTextColor = source.LocalTimeIconTextColor;
+        LocalTimeIconBackgroundColor = source.LocalTimeIconBackgroundColor;
+        LocalTimeIconBorderColor = source.LocalTimeIconBorderColor;
+        LocalTimeBorderOpacity = source.LocalTimeBorderOpacity;
+        LocalTimeIconBorderOpacity = source.LocalTimeIconBorderOpacity;
+        LocalTimeVerticalOffset = source.LocalTimeVerticalOffset;
+        LocalTimeHorizontalOffset = source.LocalTimeHorizontalOffset;
+    }
 }
 
 [Serializable]
 public partial class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 20;
+    public int Version { get; set; } = 28;
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -199,6 +288,11 @@ public partial class Configuration : IPluginConfiguration
     public bool ChatTimeHoverExperimentalWarningAccepted = false;
     public string ChatTimeHoverTimeZoneId = "";
     public float ChatTimeHoverTooltipDurationSeconds = 3f;
+    public bool AlarmAnimationsEnabled = true;
+    public int AlarmsWindowKeybind = 0;
+    public VirtualKey[] AlarmsWindowHotkey = [];
+    public bool OpenAlarmsOverlayOnAlarmTrigger = false;
+    public bool ClockAlarmsTopButtonIntroSeen = false;
 
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
     public string SelectedTimeZoneId = "";
@@ -211,7 +305,7 @@ public partial class Configuration : IPluginConfiguration
     public int ActiveProfileIndex = 0;
 
 
-    public ClockPreset PreviewPresetSelection = ClockPreset.Classic;
+    public ClockPreset PreviewPresetSelection = ClockPreset.Digital;
 
 
     public bool ClockTransparent = true;
@@ -239,6 +333,8 @@ public partial class Configuration : IPluginConfiguration
     public void EnsureInitialized()
     {
         bool needsLocalTimeMigration = Version < 14;
+        bool needsOverlayProfileMigration = Version < 22;
+        bool needsAlarmIntroMigration = Version < 28;
         MigrateTimeZones();
 
         if (Profiles == null)
@@ -246,27 +342,8 @@ public partial class Configuration : IPluginConfiguration
 
         if (Profiles.Count == 0)
         {
-            Profiles.Add(new ClockProfile
-            {
-                Name = "Default",
-                ShowBorder = ShowBorder,
-                ShowIcon = ShowIcon,
-                ShowShadowText = ShowShadowText,
-                ShowIconBorder = ShowIconBorder,
-                ClockTextScale = ClockTextScale,
-                ClockTextColor = ClockTextColor,
-                ClockShadowColor = ClockShadowColor,
-                IconTextColor = IconTextColor,
-                IconBackgroundColor = IconBackgroundColor,
-                IconBorderColor = IconBorderColor,
-                IconBorderOpacity = IconBorderOpacity,
-                ClockBackgroundOpacity = ClockBackgroundOpacity,
-                ClockBackgroundColor = ClockBackgroundColor,
-                BorderColor = BorderColor,
-                BorderOpacity = BorderOpacity,
-                DisplayStyle = ClockDisplayStyle.Classic,
-                LayoutMode = ClockLayoutMode.Horizontal
-            });
+            Profiles.Add(ClockProfileFactory.CreatePresetProfile("Default", ClockPreset.Digital));
+            PreviewPresetSelection = ClockPreset.Digital;
         }
 
         if (FavoriteTimeZoneIds == null)
@@ -287,12 +364,28 @@ public partial class Configuration : IPluginConfiguration
 
             if (needsLocalTimeMigration)
                 EnsureLocalTimeDefaults(profile);
+
+            if (needsOverlayProfileMigration)
+                EnsureOverlayTextDefaults(profile);
         }
+
+        if (AlarmsWindowHotkey == null)
+            AlarmsWindowHotkey = [];
+
+        if (AlarmsWindowHotkey.Length == 0 && AlarmsWindowKeybind != 0)
+        {
+            AlarmsWindowKeybind = 0;
+            AlarmsWindowHotkey = [];
+        }
+
+        // Versioned reset is used only to re-show the onboarding modal once after UI changes that reviewers/users need to see.
+        if (needsAlarmIntroMigration)
+            ClockAlarmsTopButtonIntroSeen = false;
 
         if (string.IsNullOrWhiteSpace(UiLanguageCultureName))
             UiLanguageCultureName = "en-US";
 
-        Version = 20;
+        Version = 28;
     }
 
     private void MigrateTimeZones()
@@ -319,6 +412,18 @@ public partial class Configuration : IPluginConfiguration
         }
 
         FavoriteTimeZoneIds = normalized;
+    }
+
+    private void EnsureOverlayTextDefaults(ClockProfile profile)
+    {
+        profile.NextAlarmOverlayDisplayStyle = NextAlarmOverlayDisplayStyle;
+        profile.NextAlarmOverlayShowShadowText = NextAlarmOverlayShowShadowText;
+        profile.NextAlarmOverlayTextColor = NextAlarmOverlayTextColor;
+        profile.NextAlarmOverlayShadowColor = NextAlarmOverlayShadowColor;
+        profile.MaintenanceOverlayDisplayStyle = MaintenanceOverlayDisplayStyle;
+        profile.MaintenanceOverlayShowShadowText = MaintenanceOverlayShowShadowText;
+        profile.MaintenanceOverlayTextColor = MaintenanceOverlayTextColor;
+        profile.MaintenanceOverlayShadowColor = MaintenanceOverlayShadowColor;
     }
 
     private void EnsureLocalTimeDefaults(ClockProfile profile)
@@ -438,23 +543,171 @@ public partial class Configuration : IPluginConfiguration
         profile.LocalTimeBorderOpacity = replacement.BorderOpacity;
         profile.LocalTimeIconBorderOpacity = replacement.IconBorderOpacity;
 
-        NextAlarmOverlayDisplayStyle = replacement.DisplayStyle;
-        NextAlarmOverlayShowShadowText = replacement.ShowShadowText;
-        NextAlarmOverlayTextColor = replacement.ClockTextColor;
-        NextAlarmOverlayShadowColor = replacement.ClockShadowColor;
-        MaintenanceOverlayDisplayStyle = replacement.DisplayStyle;
-        MaintenanceOverlayShowShadowText = replacement.ShowShadowText;
-        MaintenanceOverlayTextColor = replacement.ClockTextColor;
-        MaintenanceOverlayShadowColor = replacement.ClockShadowColor;
+        profile.NextAlarmOverlayDisplayStyle = replacement.DisplayStyle;
+        profile.NextAlarmOverlayShowShadowText = replacement.ShowShadowText;
+        profile.NextAlarmOverlayTextColor = replacement.ClockTextColor;
+        profile.NextAlarmOverlayShadowColor = replacement.ClockShadowColor;
+        profile.MaintenanceOverlayDisplayStyle = replacement.DisplayStyle;
+        profile.MaintenanceOverlayShowShadowText = replacement.ShowShadowText;
+        profile.MaintenanceOverlayTextColor = replacement.ClockTextColor;
+        profile.MaintenanceOverlayShadowColor = replacement.ClockShadowColor;
+
+        if (preset == ClockPreset.Digital)
+        {
+            profile.DisplayStyle = replacement.DisplayStyle;
+            profile.TimeTextFont = ClockTimeTextFont.Digital;
+            profile.ClockShadowColor = new Vector4(0f, 0f, 0f, 0f);
+            profile.NextAlarmOverlayShadowColor = new Vector4(0f, 0f, 0f, 1f);
+            profile.MaintenanceOverlayShadowColor = new Vector4(0f, 0f, 0f, 1f);
+            profile.IconBackgroundColor = new Vector4(0.0118f, 0.0118f, 0.0118f, 0f);
+            profile.LocalTimeShowBorder = false;
+            profile.LocalTimeShadowColor = new Vector4(0f, 0f, 0f, 0.949f);
+            profile.LocalTimeIconBackgroundColor = new Vector4(0.0118f, 0.0118f, 0.0118f, 0f);
+        }
+
+        else if (preset == ClockPreset.Cartoon)
+        {
+            profile.DisplayStyle = replacement.DisplayStyle;
+            profile.TimeTextFont = ClockTimeTextFont.Ka1;
+            profile.ClockTextColor = new Vector4(0.08f, 0.20f, 0.42f, 1f);
+            profile.ClockShadowColor = new Vector4(1f, 1f, 1f, 0.70f);
+            profile.IconTextColor = new Vector4(0.08f, 0.20f, 0.42f, 1f);
+            profile.IconBackgroundColor = new Vector4(1.00f, 0.78f, 0.20f, 1f);
+            profile.IconBorderColor = new Vector4(1f, 1f, 1f, 1f);
+            profile.IconBorderOpacity = 1f;
+            profile.ClockBackgroundOpacity = 1f;
+            profile.ClockBackgroundColor = new Vector4(0.045f, 0.047f, 0.050f, 1f);
+            profile.BorderColor = new Vector4(0.20f, 0.20f, 0.20f, 1f);
+            profile.BorderOpacity = 1f;
+            profile.LocalTimeShowBorder = false;
+            profile.LocalTimeShadowColor = new Vector4(1f, 1f, 1f, 0.55f);
+        }
+        else if (preset == ClockPreset.Tech)
+        {
+            profile.DisplayStyle = replacement.DisplayStyle;
+            profile.TimeTextFont = ClockTimeTextFont.Technology;
+            profile.ClockTextColor = new Vector4(1.00f, 0.20f, 0.20f, 1f);
+            profile.ClockShadowColor = new Vector4(0.0784f, 0.1608f, 0.1608f, 1f);
+            profile.IconTextColor = new Vector4(1.00f, 0.20f, 0.20f, 1f);
+            profile.IconBackgroundColor = new Vector4(0.102f, 0.180f, 0.180f, 0f);
+            profile.IconBorderColor = new Vector4(0.180f, 0.290f, 0.302f, 0f);
+            profile.IconBorderOpacity = 0f;
+            profile.LocalTimeShowBorder = false;
+        }
+        else if (preset == ClockPreset.Countdown)
+        {
+            profile.DisplayStyle = replacement.DisplayStyle;
+            profile.TimeTextFont = ClockTimeTextFont.Countdown;
+            profile.ClockTextColor = new Vector4(0.96f, 0.96f, 0.94f, 1f);
+            profile.ClockShadowColor = new Vector4(0f, 0f, 0f, 0.95f);
+            profile.IconTextColor = new Vector4(0.96f, 0.96f, 0.94f, 1f);
+            profile.IconBackgroundColor = new Vector4(0.04f, 0.04f, 0.04f, 1f);
+            profile.IconBorderColor = new Vector4(0.30f, 0.30f, 0.30f, 1f);
+            profile.IconBorderOpacity = 1f;
+            profile.ClockBackgroundOpacity = 1f;
+            profile.ClockBackgroundColor = new Vector4(0.045f, 0.047f, 0.050f, 1f);
+            profile.BorderColor = new Vector4(0.537f, 0.537f, 0.537f, 1f);
+            profile.BorderOpacity = 1f;
+            profile.LocalTimeShowBorder = false;
+            profile.LocalTimeShadowColor = new Vector4(0f, 0f, 0f, 0.95f);
+        }
     }
 
     public void CopyPublicStateFrom(Configuration source)
     {
         Version = source.Version;
 
-        var fields = typeof(Configuration).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-        foreach (var field in fields)
-            field.SetValue(this, field.GetValue(source));
+        IsConfigWindowMovable = source.IsConfigWindowMovable;
+        AutoStart = source.AutoStart;
+        HideDuringCutscenes = source.HideDuringCutscenes;
+        ShowCustomTimestampInChat = source.ShowCustomTimestampInChat;
+        ChatTimestampUseCustomColor = source.ChatTimestampUseCustomColor;
+        ChatTimestampShowAmPm = source.ChatTimestampShowAmPm;
+        ChatTimestampColor = source.ChatTimestampColor;
+        ChatTimestampTimeZoneId = source.ChatTimestampTimeZoneId;
+        ChatTimeHoverEnabled = source.ChatTimeHoverEnabled;
+        ChatTimeHoverShowAlarmSetupOption = source.ChatTimeHoverShowAlarmSetupOption;
+        ChatTimeHoverExperimentalWarningAccepted = source.ChatTimeHoverExperimentalWarningAccepted;
+        ChatTimeHoverTimeZoneId = source.ChatTimeHoverTimeZoneId;
+        ChatTimeHoverTooltipDurationSeconds = source.ChatTimeHoverTooltipDurationSeconds;
+        AlarmAnimationsEnabled = source.AlarmAnimationsEnabled;
+        SelectedTimeZone = source.SelectedTimeZone;
+        SelectedTimeZoneId = source.SelectedTimeZoneId;
+        FavoriteTimeZoneIds = source.FavoriteTimeZoneIds;
+        TimeFormat = source.TimeFormat;
+        ColonAnimation = source.ColonAnimation;
+        UiLanguageCultureName = source.UiLanguageCultureName;
+        Profiles = source.Profiles;
+        ActiveProfileIndex = source.ActiveProfileIndex;
+        PreviewPresetSelection = source.PreviewPresetSelection;
+        ClockTransparent = source.ClockTransparent;
+        ClockTextScale = source.ClockTextScale;
+        ShowBorder = source.ShowBorder;
+        ShowIcon = source.ShowIcon;
+        ShowShadowText = source.ShowShadowText;
+        ShowIconBorder = source.ShowIconBorder;
+        ClockTextColor = source.ClockTextColor;
+        ClockShadowColor = source.ClockShadowColor;
+        IconTextColor = source.IconTextColor;
+        IconBackgroundColor = source.IconBackgroundColor;
+        IconBorderColor = source.IconBorderColor;
+        IconBorderOpacity = source.IconBorderOpacity;
+        ClockBackgroundOpacity = source.ClockBackgroundOpacity;
+        ClockBackgroundColor = source.ClockBackgroundColor;
+        BorderColor = source.BorderColor;
+        BorderOpacity = source.BorderOpacity;
+        AlarmEditorDay = source.AlarmEditorDay;
+        AlarmEditorHour = source.AlarmEditorHour;
+        AlarmEditorMinute = source.AlarmEditorMinute;
+        AlarmEditorIsPm = source.AlarmEditorIsPm;
+        AlarmEditorMessage = source.AlarmEditorMessage;
+        AlarmEditorLastLocalDateText = source.AlarmEditorLastLocalDateText;
+        AlarmEditorDateOverrideText = source.AlarmEditorDateOverrideText;
+        AlarmSoundId = source.AlarmSoundId;
+        AlarmSoundRepeats = source.AlarmSoundRepeats;
+        AlarmEditorSnoozeEnabled = source.AlarmEditorSnoozeEnabled;
+        AlarmEditorSnoozeMinutes = source.AlarmEditorSnoozeMinutes;
+        AlarmEditorRepeatMode = source.AlarmEditorRepeatMode;
+        ShowNextAlarmOnOverlay = source.ShowNextAlarmOnOverlay;
+        NextAlarmOverlayTextScale = source.NextAlarmOverlayTextScale;
+        NextAlarmOverlayVerticalOffset = source.NextAlarmOverlayVerticalOffset;
+        NextAlarmOverlayDisplayStyle = source.NextAlarmOverlayDisplayStyle;
+        NextAlarmOverlayShowShadowText = source.NextAlarmOverlayShowShadowText;
+        NextAlarmOverlayTextColor = source.NextAlarmOverlayTextColor;
+        NextAlarmOverlayShadowColor = source.NextAlarmOverlayShadowColor;
+        ShowResetTimersOnOverlay = source.ShowResetTimersOnOverlay;
+        CommandSuggestionEnabled = source.CommandSuggestionEnabled;
+        Alarms = source.Alarms;
+        MaintenanceReminderEnabled = source.MaintenanceReminderEnabled;
+        ShowMaintenanceOnOverlay = source.ShowMaintenanceOnOverlay;
+        MaintenanceOverlayTextScale = source.MaintenanceOverlayTextScale;
+        MaintenanceOverlayVerticalOffset = source.MaintenanceOverlayVerticalOffset;
+        MaintenanceOverlayDisplayStyle = source.MaintenanceOverlayDisplayStyle;
+        MaintenanceOverlayShowShadowText = source.MaintenanceOverlayShowShadowText;
+        MaintenanceOverlayTextColor = source.MaintenanceOverlayTextColor;
+        MaintenanceOverlayShadowColor = source.MaintenanceOverlayShadowColor;
+        MaintenanceLanguage = source.MaintenanceLanguage;
+        MaintenanceRemind24Hours = source.MaintenanceRemind24Hours;
+        MaintenanceRemind1Hour = source.MaintenanceRemind1Hour;
+        MaintenanceRemind15Minutes = source.MaintenanceRemind15Minutes;
+        LastDetectedMaintenanceMessage = source.LastDetectedMaintenanceMessage;
+        DetectedMaintenanceDateTimeText = source.DetectedMaintenanceDateTimeText;
+        DetectedMaintenanceTimeZoneText = source.DetectedMaintenanceTimeZoneText;
+        DetectedMaintenanceStartUtc = source.DetectedMaintenanceStartUtc;
+        LastMaintenanceNewsTitle = source.LastMaintenanceNewsTitle;
+        LastMaintenanceNewsUrl = source.LastMaintenanceNewsUrl;
+        HasDetectedMaintenanceTime = source.HasDetectedMaintenanceTime;
+        LastMaintenanceDetectionTimestampUtc = source.LastMaintenanceDetectionTimestampUtc;
+        LastMaintenanceCheckStatus = source.LastMaintenanceCheckStatus;
+        CustomAlarmEnabled = source.CustomAlarmEnabled;
+        CustomAlarmKeepAfterTrigger = source.CustomAlarmKeepAfterTrigger;
+        CustomAlarmSoundEnabled = source.CustomAlarmSoundEnabled;
+        CustomAlarmSoundEffect = source.CustomAlarmSoundEffect;
+        CustomAlarmDateTimeText = source.CustomAlarmDateTimeText;
+        CustomAlarmMessage = source.CustomAlarmMessage;
+        CustomAlarmDay = source.CustomAlarmDay;
+        CustomAlarmHour = source.CustomAlarmHour;
+        CustomAlarmMinute = source.CustomAlarmMinute;
     }
 
     public void Save()

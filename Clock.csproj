@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.0.7.2</Version>
+    <Version>1.0.7.3</Version>
     <PackageProjectUrl>https://github.com/seventity7/clock</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
@@ -9,4 +9,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="Fonts/DS-DIGI.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fonts/Technology.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fonts/ka1.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fonts/Beautiful Police Officer.otf" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -561,27 +561,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
         }
     }
 
-    private static bool TryFindTimeZone(string windowsId, string ianaId, out TimeZoneInfo timeZone)
-    {
-        try
-        {
-            timeZone = TimeZoneInfo.FindSystemTimeZoneById(windowsId);
-            return true;
-        }
-        catch
-        {
-            try
-            {
-                timeZone = TimeZoneInfo.FindSystemTimeZoneById(ianaId);
-                return true;
-            }
-            catch
-            {
-                timeZone = TimeZoneInfo.Utc;
-                return false;
-            }
-        }
-    }
+
 
     private static string RemoveDiacritics(string value)
     {

@@ -11,7 +11,7 @@ public static class AlarmConfigurationService
         if (configuration.Alarms == null)
             configuration.Alarms = new();
 
-        configuration.AlarmSoundId = Math.Clamp(configuration.AlarmSoundId, 1, 16);
+        configuration.AlarmSoundId = configuration.AlarmSoundId < 0 || configuration.AlarmSoundId > 16 ? 9 : configuration.AlarmSoundId;
 
         NormalizeAlarmTimeZones(configuration);
         MigrateLegacyCustomAlarm(configuration);

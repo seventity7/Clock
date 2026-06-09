@@ -1,9 +1,12 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
 using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Game.ClientState.Keys;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.Toast;
 using Dalamud.Game.Text.SeStringHandling;
@@ -12,6 +15,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using Dalamud.Utility;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.ManagedFontAtlas;
 using System.Text.RegularExpressions;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Component.GUI;
@@ -22,8 +26,8 @@ namespace Clock;
 
 public sealed class Plugin : IDalamudPlugin
 {
+
     private const string CommandName = "/clock";
-    private const string SettingsCommand = "/clocksettings";
     private const string AlarmsCommand = "/clockalarms";
     private const string DirectAlarmsCommand = "/alarms";
 
@@ -37,16 +41,57 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ICondition condition;
     private readonly IChatGui chatGui;
     private readonly IToastGui toastGui;
+    private readonly IKeyState keyState;
     private readonly LodestoneMaintenanceService maintenanceService = new();
     private readonly ChatTimestampService chatTimestampService;
     private readonly ChatTimeHoverService chatTimeHoverService;
+    private readonly IFontHandle? digitalClockFontHandle;
+    private readonly IFontHandle? alarmSessionDigitalFontHandle;
+    private readonly IFontHandle? technologyClockFontHandle;
+    private readonly IFontHandle? ka1ClockFontHandle;
+    private readonly IFontHandle? countdownClockFontHandle;
+    private readonly IFontHandle? alarmPanelAlarmFontHandle;
+    private readonly IFontHandle? alarmPanelAlarmTitleFontHandle;
+    private readonly IFontHandle? largeAlarmIconFontHandle;
 
+    private bool digitalClockFontBuildQueued;
+    private bool digitalClockFontReadyLogged;
+    private bool digitalClockFontLoadLogged;
+    private bool alarmSessionDigitalFontBuildQueued;
+    private bool alarmSessionDigitalFontReadyLogged;
+    private bool alarmSessionDigitalFontLoadLogged;
+    private bool technologyClockFontBuildQueued;
+    private bool technologyClockFontReadyLogged;
+    private bool technologyClockFontLoadLogged;
+    private bool ka1ClockFontBuildQueued;
+    private bool ka1ClockFontReadyLogged;
+    private bool ka1ClockFontLoadLogged;
+    private bool countdownClockFontBuildQueued;
+    private bool countdownClockFontReadyLogged;
+    private bool countdownClockFontLoadLogged;
+    private bool alarmPanelAlarmFontBuildQueued;
+    private bool alarmPanelAlarmFontReadyLogged;
+    private bool alarmPanelAlarmFontLoadLogged;
+    private bool alarmPanelAlarmTitleFontBuildQueued;
+    private bool alarmPanelAlarmTitleFontReadyLogged;
+    private bool alarmPanelAlarmTitleFontLoadLogged;
+    private bool largeAlarmIconFontBuildQueued;
+    private bool largeAlarmIconFontReadyLogged;
+    private bool largeAlarmIconFontLoadLogged;
     private bool hasAutoStarted;
     private bool wantedMainWindowOpen;
     private DateTime lastReminderCheckUtc = DateTime.MinValue;
     private DateTime lastMaintenanceRefreshStartUtc = DateTime.MinValue;
     private Task<LodestoneMaintenanceInfo?>? maintenanceRefreshTask;
     private bool maintenanceRefreshRequestedManually;
+    private DateTime alarmOverlayUntilUtc = DateTime.MinValue;
+    private DateTime alarmOverlayTriggerUtc = DateTime.MinValue;
+    private string alarmOverlayTimeZoneId = string.Empty;
+    private bool alarmOverlayPreviewActive;
+    private bool alarmsWindowHotkeyWasDown;
+    private Guid repeatingAlarmSoundId;
+    private int repeatingAlarmSoundEffectId;
+    private DateTime repeatingAlarmSoundNextUtc = DateTime.MinValue;
 
     private readonly HashSet<string> triggeredMaintenanceKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<Guid> recentlyTriggeredAlarmIds = new();
@@ -57,9 +102,11 @@ public sealed class Plugin : IDalamudPlugin
 
     public IDalamudPluginInterface PluginInterface => pluginInterface;
     public IPluginLog Log => log;
+    public IKeyState KeyState => keyState;
 
-    private ConfigWindow ConfigWindow { get; init; }
+    public ConfigWindow ConfigWindow { get; private init; }
     private MainWindow MainWindow { get; init; }
+    private AlarmOverlayWindow AlarmOverlayWindow { get; init; }
     private CommandHintWindow CommandHintWindow { get; init; }
     private ChatTimeHoverPopupWindow ChatTimeHoverPopupWindow { get; init; }
 
@@ -71,6 +118,7 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IChatGui chatGui,
         IToastGui toastGui,
+        IKeyState keyState,
         IGameInteropProvider gameInteropProvider,
         IGameGui gameGui)
     {
@@ -81,19 +129,39 @@ public sealed class Plugin : IDalamudPlugin
         this.condition = condition;
         this.chatGui = chatGui;
         this.toastGui = toastGui;
+        this.keyState = keyState;
 
         Configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Configuration.Initialize(pluginInterface);
         Configuration.EnsureInitialized();
         Configuration.Save();
 
+        digitalClockFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "digital");
+        alarmSessionDigitalFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "alarm session digital", pluginInterface.UiBuilder.FontDefaultSizePx * 1.95f);
+        technologyClockFontHandle = CreateClockFontHandle("Technology.ttf", "technology");
+        ka1ClockFontHandle = CreateClockFontHandle("ka1.ttf", "ka1");
+        countdownClockFontHandle = CreateClockFontHandle("Beautiful Police Officer.otf", "countdown");
+        alarmPanelAlarmFontHandle = CreateWindowsFontHandle("segoeui.ttf", 42f, "alarmPanel alarm");
+        alarmPanelAlarmTitleFontHandle = CreateWindowsFontHandle("segoeui.ttf", 34f, "alarmPanel alarm title");
+        largeAlarmIconFontHandle = CreateDalamudIconFontHandle(48f, "large alarm icon");
+        QueueClockFontBuild(digitalClockFontHandle, ref digitalClockFontBuildQueued);
+        QueueClockFontBuild(alarmSessionDigitalFontHandle, ref alarmSessionDigitalFontBuildQueued);
+        QueueClockFontBuild(technologyClockFontHandle, ref technologyClockFontBuildQueued);
+        QueueClockFontBuild(ka1ClockFontHandle, ref ka1ClockFontBuildQueued);
+        QueueClockFontBuild(countdownClockFontHandle, ref countdownClockFontBuildQueued);
+        QueueClockFontBuild(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued);
+        QueueClockFontBuild(alarmPanelAlarmTitleFontHandle, ref alarmPanelAlarmTitleFontBuildQueued);
+        QueueClockFontBuild(largeAlarmIconFontHandle, ref largeAlarmIconFontBuildQueued);
+
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
+        AlarmOverlayWindow = new AlarmOverlayWindow(this);
         CommandHintWindow = new CommandHintWindow(T);
         ChatTimeHoverPopupWindow = new ChatTimeHoverPopupWindow(Configuration, pluginInterface, log, T, SetupAlarmFromChatTime);
 
         WindowSystem.AddWindow(ConfigWindow);
         WindowSystem.AddWindow(MainWindow);
+        WindowSystem.AddWindow(AlarmOverlayWindow);
         WindowSystem.AddWindow(CommandHintWindow);
         WindowSystem.AddWindow(ChatTimeHoverPopupWindow);
 
@@ -103,25 +171,21 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage =
-                "Clock commands: /clock, /clock help, /clock timezone <TimeZoneInfo ID>, /clock format 12|24|12s|24s|weekday|date, " +
+                "Clock commands: /clock, /clock on, /clock off, /clock help, /clock timezone <TimeZoneInfo ID>, /clock format 12|24|12s|24s|weekday|date, " +
                 "/clock colon default|always|hidden|slow|fast, /clock layout horizontal|vertical, " +
                 "/clock <timezone> to <timezone>, /clock lock, /clock unlock, " +
                 "/clock profile next|list|set <n>|add <name>|rename <name>|delete"
         });
 
-        commandManager.AddHandler(SettingsCommand, new CommandInfo(OnSettingsCommand)
-        {
-            HelpMessage = "Open Clock settings/customizations"
-        });
 
         commandManager.AddHandler(AlarmsCommand, new CommandInfo(OnAlarmsCommand)
         {
-            HelpMessage = "Open Clock settings directly on the Alarms tab"
+            HelpMessage = T("Open alarm overlay")
         });
 
         commandManager.AddHandler(DirectAlarmsCommand, new CommandInfo(OnAlarmsCommand)
         {
-            HelpMessage = "Open Clock settings directly on the Alarms tab"
+            HelpMessage = T("Open alarm overlay")
         });
 
         pluginInterface.UiBuilder.DisableCutsceneUiHide = !Configuration.HideDuringCutscenes;
@@ -132,6 +196,302 @@ public sealed class Plugin : IDalamudPlugin
     }
 
 
+
+
+    private IFontHandle? CreateClockFontHandle(string fileName, string label, float? sizePx = null)
+    {
+        var baseDir = pluginInterface.AssemblyLocation.DirectoryName;
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            log.Warning("Clock {Label} font path could not be resolved: assembly directory is empty.", label);
+            return null;
+        }
+
+        var fontPath = FindClockFontPath(baseDir, fileName);
+        if (fontPath == null)
+        {
+            log.Warning("Clock {Label} font file was not found. Expected {FileName} inside a Fonts folder near the plugin output or source folder.", label, fileName);
+            return null;
+        }
+
+        return pluginInterface.UiBuilder.FontAtlas.NewDelegateFontHandle(e => e.OnPreBuild(tk =>
+        {
+            var config = new SafeFontConfig
+            {
+                SizePx = sizePx ?? pluginInterface.UiBuilder.FontDefaultSizePx,
+                OversampleH = 3,
+                OversampleV = 1
+            };
+
+            var font = tk.AddFontFromFile(fontPath, config);
+            tk.Font = font;
+        }));
+    }
+
+
+
+    private IFontHandle? CreateWindowsFontHandle(string fileName, float sizePx, string label)
+    {
+        var fontsDir = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+        if (string.IsNullOrWhiteSpace(fontsDir))
+            return null;
+
+        var fontPath = Path.Combine(fontsDir, fileName);
+        if (!File.Exists(fontPath))
+            return null;
+
+        return pluginInterface.UiBuilder.FontAtlas.NewDelegateFontHandle(e => e.OnPreBuild(tk =>
+        {
+            var config = new SafeFontConfig
+            {
+                SizePx = sizePx,
+                OversampleH = 3,
+                OversampleV = 2
+            };
+
+            var font = tk.AddFontFromFile(fontPath, config);
+            tk.Font = font;
+        }));
+    }
+
+    private IFontHandle? CreateDalamudIconFontHandle(float sizePx, string label)
+    {
+        try
+        {
+            return pluginInterface.UiBuilder.FontAtlas.NewDelegateFontHandle(e => e.OnPreBuild(tk =>
+                tk.AddFontAwesomeIconFont(new() { SizePx = sizePx })));
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Clock {Label} icon font could not be created.", label);
+            return null;
+        }
+    }
+
+    private static string? FindClockFontPath(string baseDir, string fileName)
+    {
+        var dir = new DirectoryInfo(baseDir);
+        for (var i = 0; i < 7 && dir != null; i++, dir = dir.Parent)
+        {
+            var inFonts = Path.Combine(dir.FullName, "Fonts", fileName);
+            if (File.Exists(inFonts))
+                return inFonts;
+
+            var beside = Path.Combine(dir.FullName, fileName);
+            if (File.Exists(beside))
+                return beside;
+        }
+
+        return null;
+    }
+
+    private void QueueClockFontBuild(IFontHandle? handle, ref bool queued)
+    {
+        if (handle == null || queued || handle.Available)
+            return;
+
+        queued = true;
+        try
+        {
+            pluginInterface.UiBuilder.FontAtlas.BuildFontsOnNextFrame();
+        }
+        catch (InvalidOperationException)
+        {
+            try
+            {
+                _ = pluginInterface.UiBuilder.FontAtlas.BuildFontsAsync();
+            }
+            catch (Exception ex)
+            {
+                queued = false;
+                log.Warning(ex, "Could not start async Clock font rebuild.");
+            }
+        }
+        catch (Exception ex)
+        {
+            queued = false;
+            log.Warning(ex, "Could not queue Clock font rebuild.");
+        }
+    }
+
+    private void CheckClockFontState(IFontHandle? handle, ref bool queued, ref bool readyLogged, ref bool loadLogged, string label)
+    {
+        if (handle == null)
+            return;
+
+        if (!handle.Available && handle.LoadException == null)
+            QueueClockFontBuild(handle, ref queued);
+
+        if (!readyLogged && handle.Available)
+        {
+            readyLogged = true;
+            log.Information("Clock {Label} font is ready.", label);
+        }
+
+        if (!loadLogged && handle.LoadException != null)
+        {
+            loadLogged = true;
+            log.Warning(handle.LoadException, "Clock {Label} font failed to load.", label);
+        }
+    }
+
+    private void CheckDigitalClockFontState()
+    {
+        CheckClockFontState(digitalClockFontHandle, ref digitalClockFontBuildQueued, ref digitalClockFontReadyLogged, ref digitalClockFontLoadLogged, "digital");
+    }
+
+    private void CheckAlarmSessionDigitalFontState()
+    {
+        CheckClockFontState(alarmSessionDigitalFontHandle, ref alarmSessionDigitalFontBuildQueued, ref alarmSessionDigitalFontReadyLogged, ref alarmSessionDigitalFontLoadLogged, "alarm session digital");
+    }
+
+    public ILockedImFont? LockAlarmSessionDigitalFont()
+    {
+        if (alarmSessionDigitalFontHandle == null)
+            return null;
+
+        CheckAlarmSessionDigitalFontState();
+        return alarmSessionDigitalFontHandle.Available ? alarmSessionDigitalFontHandle.Lock() : null;
+    }
+
+    private void CheckTechnologyClockFontState()
+    {
+        CheckClockFontState(technologyClockFontHandle, ref technologyClockFontBuildQueued, ref technologyClockFontReadyLogged, ref technologyClockFontLoadLogged, "technology");
+    }
+
+    private void CheckKa1ClockFontState()
+    {
+        CheckClockFontState(ka1ClockFontHandle, ref ka1ClockFontBuildQueued, ref ka1ClockFontReadyLogged, ref ka1ClockFontLoadLogged, "ka1");
+    }
+
+    private void CheckCountdownClockFontState()
+    {
+        CheckClockFontState(countdownClockFontHandle, ref countdownClockFontBuildQueued, ref countdownClockFontReadyLogged, ref countdownClockFontLoadLogged, "countdown");
+
+        CheckClockFontState(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
+    }
+
+    public IDisposable PushClockTimeFont(ClockTimeTextFont font)
+    {
+        if (font == ClockTimeTextFont.Digital)
+        {
+            if (digitalClockFontHandle == null)
+                return EmptyFontScope.Instance;
+
+            CheckDigitalClockFontState();
+            return digitalClockFontHandle.Available ? digitalClockFontHandle.Push() : EmptyFontScope.Instance;
+        }
+
+        if (font == ClockTimeTextFont.Technology)
+        {
+            if (technologyClockFontHandle == null)
+                return EmptyFontScope.Instance;
+
+            CheckTechnologyClockFontState();
+            return technologyClockFontHandle.Available ? technologyClockFontHandle.Push() : EmptyFontScope.Instance;
+        }
+
+        if (font == ClockTimeTextFont.Ka1)
+        {
+            if (ka1ClockFontHandle == null)
+                return EmptyFontScope.Instance;
+
+            CheckKa1ClockFontState();
+            return ka1ClockFontHandle.Available ? ka1ClockFontHandle.Push() : EmptyFontScope.Instance;
+        }
+
+        if (font == ClockTimeTextFont.Countdown)
+        {
+            if (countdownClockFontHandle == null)
+                return EmptyFontScope.Instance;
+
+            CheckCountdownClockFontState();
+            return countdownClockFontHandle.Available ? countdownClockFontHandle.Push() : EmptyFontScope.Instance;
+        }
+
+        return EmptyFontScope.Instance;
+    }
+
+    public bool IsDigitalClockFontReady()
+    {
+        CheckDigitalClockFontState();
+        return digitalClockFontHandle?.Available == true;
+    }
+
+    public bool IsTechnologyClockFontReady()
+    {
+        CheckTechnologyClockFontState();
+        return technologyClockFontHandle?.Available == true;
+    }
+
+    public bool IsKa1ClockFontReady()
+    {
+        CheckKa1ClockFontState();
+        return ka1ClockFontHandle?.Available == true;
+    }
+
+    public bool IsCountdownClockFontReady()
+    {
+        CheckCountdownClockFontState();
+        return countdownClockFontHandle?.Available == true;
+    }
+
+    private void CheckAlarmPanelAlarmFontState()
+    {
+        CheckClockFontState(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
+    }
+
+    public IDisposable PushAlarmPanelAlarmFont()
+    {
+        if (alarmPanelAlarmFontHandle == null)
+            return EmptyFontScope.Instance;
+
+        CheckAlarmPanelAlarmFontState();
+        return alarmPanelAlarmFontHandle.Available ? alarmPanelAlarmFontHandle.Push() : EmptyFontScope.Instance;
+    }
+
+    private void CheckAlarmPanelAlarmTitleFontState()
+    {
+        CheckClockFontState(alarmPanelAlarmTitleFontHandle, ref alarmPanelAlarmTitleFontBuildQueued, ref alarmPanelAlarmTitleFontReadyLogged, ref alarmPanelAlarmTitleFontLoadLogged, "alarmPanel alarm title");
+    }
+
+    public IDisposable PushAlarmPanelAlarmTitleFont()
+    {
+        if (alarmPanelAlarmTitleFontHandle == null)
+            return PushAlarmPanelAlarmFont();
+
+        CheckAlarmPanelAlarmTitleFontState();
+        return alarmPanelAlarmTitleFontHandle.Available ? alarmPanelAlarmTitleFontHandle.Push() : PushAlarmPanelAlarmFont();
+    }
+
+    private void CheckLargeAlarmIconFontState()
+    {
+        CheckClockFontState(largeAlarmIconFontHandle, ref largeAlarmIconFontBuildQueued, ref largeAlarmIconFontReadyLogged, ref largeAlarmIconFontLoadLogged, "large alarm icon");
+    }
+
+    public IDisposable PushLargeAlarmIconFont()
+    {
+        if (largeAlarmIconFontHandle == null)
+            return pluginInterface.UiBuilder.IconFontHandle.Push();
+
+        CheckLargeAlarmIconFontState();
+        return largeAlarmIconFontHandle.Available ? largeAlarmIconFontHandle.Push() : pluginInterface.UiBuilder.IconFontHandle.Push();
+    }
+
+    public ILockedImFont? LockLargeAlarmIconFont()
+    {
+        if (largeAlarmIconFontHandle == null)
+            return null;
+
+        CheckLargeAlarmIconFontState();
+        return largeAlarmIconFontHandle.Available ? largeAlarmIconFontHandle.Lock() : null;
+    }
+
+    private sealed class EmptyFontScope : IDisposable
+    {
+        public static readonly EmptyFontScope Instance = new();
+        public void Dispose() { }
+    }
 
     private void SetupAlarmFromChatTime(ChatTimeHoverService.ChatAlarmSetupRequest request)
     {
@@ -269,10 +629,17 @@ public sealed class Plugin : IDalamudPlugin
 
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        AlarmOverlayWindow.Dispose();
         CommandHintWindow.Dispose();
+        ChatTimeHoverPopupWindow.Dispose();
+        digitalClockFontHandle?.Dispose();
+        technologyClockFontHandle?.Dispose();
+        ka1ClockFontHandle?.Dispose();
+        countdownClockFontHandle?.Dispose();
+        alarmPanelAlarmFontHandle?.Dispose();
+        alarmPanelAlarmTitleFontHandle?.Dispose();
 
         commandManager.RemoveHandler(CommandName);
-        commandManager.RemoveHandler(SettingsCommand);
         commandManager.RemoveHandler(AlarmsCommand);
         commandManager.RemoveHandler(DirectAlarmsCommand);
     }
@@ -280,6 +647,15 @@ public sealed class Plugin : IDalamudPlugin
     private void DrawUI()
     {
         pluginInterface.UiBuilder.DisableCutsceneUiHide = !Configuration.HideDuringCutscenes;
+        var activeFont = Configuration.GetActiveProfile().TimeTextFont;
+        if (activeFont == ClockTimeTextFont.Digital)
+            CheckDigitalClockFontState();
+        else if (activeFont == ClockTimeTextFont.Technology)
+            CheckTechnologyClockFontState();
+        else if (activeFont == ClockTimeTextFont.Ka1)
+            CheckKa1ClockFontState();
+        else if (activeFont == ClockTimeTextFont.Countdown)
+            CheckCountdownClockFontState();
 
         if (!hasAutoStarted && Configuration.AutoStart && clientState.IsLoggedIn)
         {
@@ -289,10 +665,68 @@ public sealed class Plugin : IDalamudPlugin
 
         CheckReminders();
         MonitorCommandHints();
+        CheckAlarmsWindowKeybind();
+        CheckRepeatingAlarmSound();
         MainWindow.IsOpen = wantedMainWindowOpen && !ShouldHideClock();
         WindowSystem.Draw();
     }
 
+
+    private void CheckAlarmsWindowKeybind()
+    {
+        var keys = Configuration.AlarmsWindowHotkey ?? [];
+        if (keys.Length == 0 || ConfigWindow.IsCapturingAlarmsWindowKeybind)
+        {
+            alarmsWindowHotkeyWasDown = false;
+            return;
+        }
+
+        var validKeys = keyState.GetValidVirtualKeys().ToHashSet();
+        foreach (var key in keys)
+        {
+            if (!validKeys.Contains(key) || !keyState[key])
+            {
+                alarmsWindowHotkeyWasDown = false;
+                return;
+            }
+        }
+
+        if (alarmsWindowHotkeyWasDown)
+            return;
+
+        alarmsWindowHotkeyWasDown = true;
+        foreach (var key in keys)
+            keyState[key] = false;
+
+        ToggleAlarmOverlay();
+    }
+
+    public string FormatAlarmsWindowKeybind()
+    {
+        var keys = Configuration.AlarmsWindowHotkey ?? [];
+        return keys.Length == 0 ? "None" : string.Join("+", keys.Select(FormatVirtualKey));
+    }
+
+    public static string FormatVirtualKey(VirtualKey key)
+    {
+        return key switch
+        {
+            VirtualKey.KEY_0 => "0",
+            VirtualKey.KEY_1 => "1",
+            VirtualKey.KEY_2 => "2",
+            VirtualKey.KEY_3 => "3",
+            VirtualKey.KEY_4 => "4",
+            VirtualKey.KEY_5 => "5",
+            VirtualKey.KEY_6 => "6",
+            VirtualKey.KEY_7 => "7",
+            VirtualKey.KEY_8 => "8",
+            VirtualKey.KEY_9 => "9",
+            VirtualKey.CONTROL => "Ctrl",
+            VirtualKey.MENU => "Alt",
+            VirtualKey.SHIFT => "Shift",
+            _ => key.ToString().Replace("KEY_", string.Empty, StringComparison.Ordinal)
+        };
+    }
 
     private unsafe void MonitorCommandHints()
     {
@@ -415,6 +849,8 @@ public sealed class Plugin : IDalamudPlugin
 
             var isSnoozeTrigger = hasPendingSnooze;
             var triggerMessage = alarm.BuildTriggerMessage(Configuration.TimeFormat, isSnoozeTrigger);
+            StartAlarmOverlayVisual(alarm, isSnoozeTrigger ? alarm.SnoozedUntilUtc : alarmUtc, nowUtc);
+            ShowAlarmWindowTriggerSession(alarm, alarmUtc);
             SendAlarmOutput(triggerMessage);
 
             if (isSnoozeTrigger)
@@ -442,6 +878,154 @@ public sealed class Plugin : IDalamudPlugin
         if (changed)
             Configuration.Save();
     }
+
+
+    private void StartAlarmOverlayVisual(AlarmEntry alarm, DateTime triggerUtc, DateTime nowUtc)
+    {
+        if (!Configuration.AlarmAnimationsEnabled)
+            return;
+
+        alarmOverlayPreviewActive = false;
+        alarmOverlayTriggerUtc = triggerUtc;
+        alarmOverlayTimeZoneId = alarm.GetEffectiveTimeZoneId();
+        alarmOverlayUntilUtc = nowUtc.AddSeconds(5.0);
+    }
+
+    private void ShowAlarmWindowTriggerSession(AlarmEntry alarm, DateTime triggerUtc)
+    {
+        if (!Configuration.OpenAlarmsOverlayOnAlarmTrigger)
+            return;
+
+        var alarmLocal = TimeZoneHelper.ConvertFromUtc(triggerUtc, alarm.GetEffectiveTimeZoneId());
+        var alarmTimeText = FormatAlarmSessionTime(alarmLocal, alarm.GetEffectiveTimeZoneId());
+        AlarmOverlayWindow.ShowTriggeredAlarm(alarm.Id, alarm.Message, Configuration.AlarmSoundId, alarmTimeText, !alarm.SnoozeEnabled);
+        AlarmOverlayWindow.IsOpen = true;
+        if (Configuration.AlarmSoundRepeats)
+            StartRepeatingAlarmSound(alarm.Id, Configuration.AlarmSoundId);
+    }
+
+    private string FormatAlarmSessionTime(DateTime local, string timeZoneId)
+    {
+        var hour = local.Hour % 12;
+        if (hour == 0)
+            hour = 12;
+
+        var suffix = local.Hour >= 12 ? "P.M" : "A.M";
+        var zone = TimeZoneHelper.ToShortText(timeZoneId);
+        return $"{hour:00}:{local.Minute:00} {suffix} {zone}";
+    }
+
+    public void SnoozeAlarmFromOverlay(Guid alarmId, int minutes)
+    {
+        var alarm = Configuration.Alarms.FirstOrDefault(a => a.Id == alarmId);
+        if (alarm == null)
+            return;
+
+        alarm.SnoozeEnabled = true;
+        alarm.SnoozeMinutes = Math.Clamp(minutes, 1, 120);
+        alarm.SnoozedUntilUtc = DateTime.UtcNow.AddMinutes(alarm.SnoozeMinutes);
+        alarm.SnoozeTriggered = false;
+        alarm.SnoozeCanceled = false;
+        alarm.HasTriggered = true;
+        alarm.Enabled = true;
+        recentlyTriggeredAlarmIds.Remove(alarm.Id);
+        StopRepeatingAlarmSound(alarmId);
+        Configuration.Save();
+        ShowAlarmToast(T("Alarm snoozed for the next 10 minutes"));
+    }
+
+    public void DismissAlarmOverlaySession(Guid alarmId)
+    {
+        StopRepeatingAlarmSound(alarmId);
+    }
+
+    public void StopAlarmOverlaySessionSound()
+    {
+        StopRepeatingAlarmSound(Guid.Empty, true);
+    }
+
+    private void StartRepeatingAlarmSound(Guid alarmId, int soundId)
+    {
+        if (soundId <= 0)
+            return;
+
+        repeatingAlarmSoundId = alarmId;
+        repeatingAlarmSoundEffectId = Math.Clamp(soundId, MinAlarmSoundEffectId, MaxAlarmSoundEffectId);
+        repeatingAlarmSoundNextUtc = DateTime.UtcNow.AddSeconds(1.0);
+    }
+
+    private void StopRepeatingAlarmSound(Guid alarmId, bool force = false)
+    {
+        if (!force && repeatingAlarmSoundId != alarmId)
+            return;
+
+        repeatingAlarmSoundId = Guid.Empty;
+        repeatingAlarmSoundEffectId = 0;
+        repeatingAlarmSoundNextUtc = DateTime.MinValue;
+    }
+
+    private void CheckRepeatingAlarmSound()
+    {
+        if (repeatingAlarmSoundId == Guid.Empty || repeatingAlarmSoundEffectId <= 0)
+            return;
+
+        // Repeating sounds are tied to an active triggered-session overlay; closing the session always stops the loop.
+        if (!AlarmOverlayWindow.IsOpen || !AlarmOverlayWindow.HasTriggeredAlarmSession)
+        {
+            StopRepeatingAlarmSound(Guid.Empty, true);
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (now < repeatingAlarmSoundNextUtc)
+            return;
+
+        PlayAlarmSoundEffect(repeatingAlarmSoundEffectId);
+        repeatingAlarmSoundNextUtc = now.AddSeconds(1.0);
+    }
+
+    private void ShowAlarmToast(string message)
+    {
+        toastGui.ShowQuest(message, new QuestToastOptions
+        {
+            PlaySound = false
+        });
+    }
+
+    public void RunAlarmAnimationPreview()
+    {
+        alarmOverlayPreviewActive = true;
+        alarmOverlayTriggerUtc = DateTime.UtcNow;
+        alarmOverlayTimeZoneId = Configuration.SelectedTimeZoneId;
+        alarmOverlayUntilUtc = DateTime.UtcNow.AddSeconds(5.0);
+    }
+
+    public bool TryGetAlarmOverlayVisual(out DateTime triggerUtc, out string timeZoneId, out float progress)
+    {
+        var nowUtc = DateTime.UtcNow;
+        if (alarmOverlayUntilUtc <= nowUtc || alarmOverlayTriggerUtc <= DateTime.MinValue || string.IsNullOrWhiteSpace(alarmOverlayTimeZoneId))
+        {
+            triggerUtc = DateTime.MinValue;
+            timeZoneId = string.Empty;
+            progress = 1.0f;
+            alarmOverlayPreviewActive = false;
+            return false;
+        }
+
+        if (!alarmOverlayPreviewActive && !Configuration.AlarmAnimationsEnabled)
+        {
+            triggerUtc = DateTime.MinValue;
+            timeZoneId = string.Empty;
+            progress = 1.0f;
+            return false;
+        }
+
+        triggerUtc = alarmOverlayTriggerUtc;
+        timeZoneId = alarmOverlayTimeZoneId;
+        progress = 1.0f - (float)Math.Clamp((alarmOverlayUntilUtc - nowUtc).TotalSeconds / 5.0, 0.0, 1.0);
+        return true;
+    }
+
 
     private void UpdateMaintenanceDetection(DateTime nowUtc)
     {
@@ -581,7 +1165,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var whenText = $"{Configuration.DetectedMaintenanceDateTimeText} {zoneText}";
         var message = string.Format(CultureInfo.InvariantCulture, T("Scheduled maintenance starts in {0}. ({1})"), leadText, whenText);
-        chatGui.Print(message, "Clock");
+        chatGui.Print(T(message), "Clock");
         toastGui.ShowQuest(message, new QuestToastOptions
         {
             PlaySound = false
@@ -594,7 +1178,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (string.IsNullOrWhiteSpace(args))
         {
-            ToggleMainUi();
+            ToggleConfigUi();
             return;
         }
 
@@ -611,14 +1195,16 @@ public sealed class Plugin : IDalamudPlugin
                 PrintHelp();
                 return;
 
-            case "toggle":
-                ToggleMainUi();
-                chatGui.Print($"Clock {(wantedMainWindowOpen ? "opened" : "hidden")}.", "Clock");
+            case "on":
+                SetMainUiOpen(true);
+                chatGui.Print(T("Clock overlay opened."), "Clock");
                 return;
 
-            case "settings":
-                ToggleConfigUi();
+            case "off":
+                SetMainUiOpen(false);
+                chatGui.Print(T("Clock overlay hidden."), "Clock");
                 return;
+
 
             case "lock":
                 Configuration.IsConfigWindowMovable = false;
@@ -654,6 +1240,7 @@ public sealed class Plugin : IDalamudPlugin
                 HandleProfileCommand(rest);
                 return;
 
+
             default:
                 PrintHelp();
                 return;
@@ -671,13 +1258,13 @@ public sealed class Plugin : IDalamudPlugin
         var rightRaw = match.Groups[2].Value.Trim();
         if (!TimeZoneHelper.TryResolveTimeZone(leftRaw, out var leftId))
         {
-            chatGui.PrintError($"Invalid timezone: {leftRaw}", "Clock");
+            chatGui.PrintError(string.Format(CultureInfo.InvariantCulture, T("Invalid timezone: {0}"), leftRaw), "Clock");
             return true;
         }
 
         if (!TimeZoneHelper.TryResolveTimeZone(rightRaw, out var rightId))
         {
-            chatGui.PrintError($"Invalid timezone: {rightRaw}", "Clock");
+            chatGui.PrintError(string.Format(CultureInfo.InvariantCulture, T("Invalid timezone: {0}"), rightRaw), "Clock");
             return true;
         }
 
@@ -691,7 +1278,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var leftLabel = BuildTypedTimeZoneLabel(leftRaw, leftId);
         var rightLabel = BuildTypedTimeZoneLabel(rightRaw, rightId);
-        chatGui.Print($"It is {leftTime:HH:mm} {leftLabel} and {rightTime:HH:mm} {rightLabel} {diffText}.", "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("It is {0} {1} and {2} {3} {4}."), leftTime.ToString("HH:mm", CultureInfo.InvariantCulture), leftLabel, rightTime.ToString("HH:mm", CultureInfo.InvariantCulture), rightLabel, diffText), "Clock");
         return true;
     }
 
@@ -704,42 +1291,37 @@ public sealed class Plugin : IDalamudPlugin
         return TimeZoneHelper.ToShortText(resolvedId);
     }
 
-    private static string BuildOffsetDifferenceText(TimeSpan difference)
+    private string BuildOffsetDifferenceText(TimeSpan difference)
     {
         var totalMinutes = (int)Math.Round(Math.Abs(difference.TotalMinutes));
         if (totalMinutes == 0)
-            return "with no time difference";
+            return T("with no time difference");
 
         var hours = totalMinutes / 60;
         var minutes = totalMinutes % 60;
-        var hourText = hours > 0 ? $"{hours} hour{(hours == 1 ? "" : "s")}" : string.Empty;
-        var minuteText = minutes > 0 ? $"{minutes} minute{(minutes == 1 ? "" : "s")}" : string.Empty;
+        var hourText = hours > 0 ? string.Format(CultureInfo.InvariantCulture, T(hours == 1 ? "{0} hour" : "{0} hours"), hours) : string.Empty;
+        var minuteText = minutes > 0 ? string.Format(CultureInfo.InvariantCulture, T(minutes == 1 ? "{0} minute" : "{0} minutes"), minutes) : string.Empty;
         var combined = string.IsNullOrWhiteSpace(hourText) ? minuteText : string.IsNullOrWhiteSpace(minuteText) ? hourText : $"{hourText} {minuteText}";
-        return $"with {combined} {(difference.TotalMinutes > 0 ? "ahead" : "behind")} difference";
-    }
-
-    private void OnSettingsCommand(string command, string args)
-    {
-        ToggleConfigUi();
+        return string.Format(CultureInfo.InvariantCulture, T(difference.TotalMinutes > 0 ? "with {0} ahead difference" : "with {0} behind difference"), combined);
     }
 
     private void OnAlarmsCommand(string command, string args)
     {
-        OpenConfigUiAtAlarms();
+        ToggleAlarmOverlay();
     }
 
     private void HandleTimezoneCommand(string rest)
     {
         if (!TimeZoneHelper.TryResolveTimeZone(rest, out var timeZoneId))
         {
-            chatGui.PrintError("Invalid timezone. Use a valid TimeZoneInfo ID like \"Eastern Standard Time\" or \"America/New_York\".", "Clock");
+            chatGui.PrintError(T("Invalid timezone. Use a valid TimeZoneInfo ID like \"Eastern Standard Time\" or \"America/New_York\"."), "Clock");
             return;
         }
 
         Configuration.SelectedTimeZoneId = timeZoneId;
         Configuration.Save();
 
-        chatGui.Print($"Timezone set to {TimeZoneHelper.GetComboLabel(timeZoneId)}.", "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Timezone set to {0}."), TimeZoneHelper.GetComboLabel(timeZoneId)), "Clock");
     }
 
     private void HandleFormatCommand(string rest)
@@ -792,7 +1374,7 @@ public sealed class Plugin : IDalamudPlugin
                 return;
 
             default:
-                chatGui.PrintError("Invalid format. Use 12, 24, 12s, 24s, weekday or date.", "Clock");
+                chatGui.PrintError(T("Invalid format. Use 12, 24, 12s, 24s, weekday or date."), "Clock");
                 return;
         }
     }
@@ -846,12 +1428,12 @@ public sealed class Plugin : IDalamudPlugin
 
         if (rest is not ("default" or "blink" or "always" or "hidden" or "off" or "slow" or "fast"))
         {
-            chatGui.PrintError("Invalid colon mode. Use default, always, hidden, slow or fast.", "Clock");
+            chatGui.PrintError(T("Invalid colon mode. Use default, always, hidden, slow or fast."), "Clock");
             return;
         }
 
         Configuration.Save();
-        chatGui.Print($"Colon animation set to {Configuration.ColonAnimation}.", "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Colon animation set to {0}."), Configuration.ColonAnimation), "Clock");
     }
 
     private void HandleLayoutCommand(string rest)
@@ -871,12 +1453,12 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                chatGui.PrintError("Invalid layout. Use horizontal or vertical.", "Clock");
+                chatGui.PrintError(T("Invalid layout. Use horizontal or vertical."), "Clock");
                 return;
         }
 
         Configuration.Save();
-        chatGui.Print($"Layout set to {profile.LayoutMode}.", "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Layout set to {0}."), profile.LayoutMode), "Clock");
     }
 
     private void HandlePresetCommand(string rest)
@@ -896,18 +1478,21 @@ public sealed class Plugin : IDalamudPlugin
             "casino" or "casinogold" => ClockPreset.CasinoGold,
             "transparent" or "compact" or "compacttransparent" => ClockPreset.CompactTransparent,
             "raid" or "raidminimal" => ClockPreset.RaidMinimal,
+            "tech" or "technology" => ClockPreset.Tech,
+            "digital" => ClockPreset.Digital,
+            "countdown" or "flip" or "flap" => ClockPreset.Countdown,
             _ => ClockPreset.Classic
         };
 
         if (rest is not ("classic" or "minimal" or "gold" or "retro" or "blue" or "crystal" or "crystalblue" or "dark" or "dalamud" or "dalamuddark" or "white" or "clean" or "cleanwhite" or "purple" or "neon" or "neonpurple" or "casino" or "casinogold" or "transparent" or "compact" or "compacttransparent" or "raid" or "raidminimal"))
         {
-            chatGui.PrintError("Invalid preset. Use classic, minimal, gold, retro, blue, dark, white, purple, casino, transparent or raid.", "Clock");
+            chatGui.PrintError(T("Invalid preset. Use classic, minimal, gold, retro, blue, dark, white, purple, casino, transparent or raid."), "Clock");
             return;
         }
 
         Configuration.PreviewPresetSelection = preset;
         Configuration.Save();
-        chatGui.Print($"Preset selected: {preset}.", "Clock");
+        chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Preset selected: {0}."), preset), "Clock");
     }
 
     private void HandleProfileCommand(string rest)
@@ -921,12 +1506,12 @@ public sealed class Plugin : IDalamudPlugin
             case "next":
                 Configuration.ActiveProfileIndex = (Configuration.ActiveProfileIndex + 1) % Configuration.Profiles.Count;
                 Configuration.Save();
-                chatGui.Print($"Active profile: {Configuration.GetActiveProfile().Name}", "Clock");
+                chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Active profile: {0}"), Configuration.GetActiveProfile().Name), "Clock");
                 return;
 
             case "list":
                 var list = string.Join(", ", Configuration.Profiles.Select((p, i) => $"{i + 1}:{p.Name}"));
-                chatGui.Print($"Profiles: {list}", "Clock");
+                chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Profiles: {0}"), list), "Clock");
                 return;
 
             case "set":
@@ -934,11 +1519,11 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     Configuration.ActiveProfileIndex = idx - 1;
                     Configuration.Save();
-                    chatGui.Print($"Active profile: {Configuration.GetActiveProfile().Name}", "Clock");
+                    chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Active profile: {0}"), Configuration.GetActiveProfile().Name), "Clock");
                 }
                 else
                 {
-                    chatGui.PrintError("Invalid profile index.", "Clock");
+                    chatGui.PrintError(T("Invalid profile index."), "Clock");
                 }
 
                 return;
@@ -951,68 +1536,66 @@ public sealed class Plugin : IDalamudPlugin
 
                     Configuration.AddProfile(name);
                     Configuration.Save();
-                    chatGui.Print($"Profile \"{Configuration.GetActiveProfile().Name}\" created.", "Clock");
+                    chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Profile \"{0}\" created."), Configuration.GetActiveProfile().Name), "Clock");
                     return;
                 }
 
             case "rename":
                 if (string.IsNullOrWhiteSpace(value))
                 {
-                    chatGui.PrintError("Provide a new profile name.", "Clock");
+                    chatGui.PrintError(T("Provide a new profile name."), "Clock");
                     return;
                 }
 
                 Configuration.GetActiveProfile().Name = value.Trim();
                 Configuration.Save();
-                chatGui.Print($"Profile renamed to \"{Configuration.GetActiveProfile().Name}\".", "Clock");
+                chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Profile renamed to \"{0}\"."), Configuration.GetActiveProfile().Name), "Clock");
                 return;
 
             case "delete":
                 if (Configuration.Profiles.Count <= 1)
                 {
-                    chatGui.PrintError("At least one profile must remain.", "Clock");
+                    chatGui.PrintError(T("At least one profile must remain."), "Clock");
                     return;
                 }
 
                 var removed = Configuration.GetActiveProfile().Name;
                 Configuration.DeleteActiveProfile();
                 Configuration.Save();
-                chatGui.Print($"Profile \"{removed}\" deleted.", "Clock");
+                chatGui.Print(string.Format(CultureInfo.InvariantCulture, T("Profile \"{0}\" deleted."), removed), "Clock");
                 return;
 
             default:
-                chatGui.PrintError("Use: /clock profile next|list|set <n>|add <name>|rename <name>|delete", "Clock");
+                chatGui.PrintError(T("Use: /clock profile next|list|set <n>|add <name>|rename <name>|delete"), "Clock");
                 return;
         }
     }
 
     private void PrintHelp()
     {
-        chatGui.Print("/clock - toggle clock", "Clock");
-        chatGui.Print("/clock settings - open settings", "Clock");
-        chatGui.Print("/alarms - open settings on the alarms tab", "Clock");
-        chatGui.Print("/clock timezone <TimeZoneInfo ID or alias>", "Clock");
-        chatGui.Print("/clock format 12|24|12s|24s|weekday|date", "Clock");
-        chatGui.Print("/clock colon default|always|hidden|slow|fast", "Clock");
-        chatGui.Print("/clock layout horizontal|vertical", "Clock");
-        chatGui.Print("/clock <timezone1> to <timezone2> - compare current time between two timezones", "Clock");
-        chatGui.Print("/clock lock | /clock unlock", "Clock");
-        chatGui.Print("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Clock");
+        chatGui.Print(T("/clock - open settings"), "Clock");
+        chatGui.Print(T("/clock on - show clock overlay"), "Clock");
+        chatGui.Print(T("/clock off - hide clock overlay"), "Clock");
+        chatGui.Print(T("/alarms - open alarm overlay"), "Clock");
+        chatGui.Print(T("/clock timezone <TimeZoneInfo ID or alias>"), "Clock");
+        chatGui.Print(T("/clock format 12|24|12s|24s|weekday|date"), "Clock");
+        chatGui.Print(T("/clock colon default|always|hidden|slow|fast"), "Clock");
+        chatGui.Print(T("/clock layout horizontal|vertical"), "Clock");
+        chatGui.Print(T("/clock <timezone1> to <timezone2> - compare current time between two timezones"), "Clock");
+        chatGui.Print(T("/clock lock | /clock unlock"), "Clock");
+        chatGui.Print(T("/clock profile next|list|set <n>|add <name>|rename <name>|delete"), "Clock");
     }
 
     private void SaveAndNotify(string message)
     {
         Configuration.Save();
-        chatGui.Print(message, "Clock");
+        chatGui.Print(T(message), "Clock");
     }
 
     public void SendAlarmOutput(string message)
     {
         chatGui.Print(BuildColoredAlarmMessage(message));
-        toastGui.ShowQuest(message, new QuestToastOptions
-        {
-            PlaySound = false
-        });
+        ShowAlarmToast(message);
         PlayAlarmSoundEffect(Configuration.AlarmSoundId);
     }
 
@@ -1030,6 +1613,9 @@ public sealed class Plugin : IDalamudPlugin
     // before calling into the client, so bad config values cannot request arbitrary sound ids.
     private unsafe void PlayAlarmSoundEffect(int soundId)
     {
+        if (soundId <= 0)
+            return;
+
         try
         {
             UIGlobals.PlayChatSoundEffect((uint)Math.Clamp(soundId, MinAlarmSoundEffectId, MaxAlarmSoundEffectId));
@@ -1101,7 +1687,7 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private string T(string text)
+    public string T(string text)
     {
         return ClockLocalizationService.Translate(Configuration.UiLanguageCultureName, text);
     }
@@ -1141,9 +1727,19 @@ public sealed class Plugin : IDalamudPlugin
         ConfigWindow.OpenToAlarmsTab();
     }
 
+    public void ToggleAlarmOverlay() => AlarmOverlayWindow.Toggle();
+
+    public void OpenAlarmOverlay() => AlarmOverlayWindow.IsOpen = true;
+
     public void ToggleMainUi()
     {
         wantedMainWindowOpen = !wantedMainWindowOpen;
+        MainWindow.IsOpen = wantedMainWindowOpen && !ShouldHideClock();
+    }
+
+    private void SetMainUiOpen(bool open)
+    {
+        wantedMainWindowOpen = open;
         MainWindow.IsOpen = wantedMainWindowOpen && !ShouldHideClock();
     }
 }

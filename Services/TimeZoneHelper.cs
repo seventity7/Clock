@@ -223,17 +223,17 @@ public static class TimeZoneHelper
             return false;
 
         var trimmed = input.Trim();
-        if (TryFindDirect(trimmed, out var directZone))
+        var normalized = NormalizeAlias(trimmed);
+        var aliasMatch = AliasMap.FirstOrDefault(a => NormalizeAlias(a.Alias) == normalized);
+        if (!string.IsNullOrWhiteSpace(aliasMatch.Alias) && TryFindAliasPair(aliasMatch.WindowsId, aliasMatch.IanaId, out var aliasZone))
         {
-            timeZoneId = directZone.Id;
+            timeZoneId = aliasZone.Id;
             return true;
         }
 
-        var normalized = NormalizeAlias(trimmed);
-        var aliasMatch = AliasMap.FirstOrDefault(a => NormalizeAlias(a.Alias) == normalized);
-        if (!string.IsNullOrWhiteSpace(aliasMatch.Alias) && TryFindPair(aliasMatch.WindowsId, aliasMatch.IanaId, out var aliasZone))
+        if (TryFindDirect(trimmed, out var directZone))
         {
-            timeZoneId = aliasZone.Id;
+            timeZoneId = directZone.Id;
             return true;
         }
 
@@ -434,6 +434,11 @@ public static class TimeZoneHelper
     private static bool TryFindPair(string windowsId, string ianaId, out TimeZoneInfo timeZone)
     {
         return TryFindDirect(windowsId, out timeZone) || TryFindDirect(ianaId, out timeZone);
+    }
+
+    private static bool TryFindAliasPair(string windowsId, string ianaId, out TimeZoneInfo timeZone)
+    {
+        return TryFindDirect(ianaId, out timeZone) || TryFindDirect(windowsId, out timeZone);
     }
 
     private static bool TryFindDirect(string timeZoneId, out TimeZoneInfo timeZone)

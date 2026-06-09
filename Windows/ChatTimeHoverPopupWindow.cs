@@ -167,7 +167,7 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
 
         if (ShouldShowSetupButton(out var blockedReason))
         {
-            ImGui.Separator();
+            DrawFadeSeparator();
             if (DrawSetupButton(popupWidth))
             {
                 setupAlarmFromChat(new ChatTimeHoverService.ChatAlarmSetupRequest(match.TargetLocal, match.TargetTimeZoneId));
@@ -192,4 +192,28 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
         if (DateTime.UtcNow > closeAt && !mouseInside)
             IsOpen = false;
     }
+
+    private static void DrawFadeSeparator()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var y = pos.Y + 4f;
+        var styleColor = ImGui.GetStyle().Colors[(int)ImGuiCol.Separator];
+        if (styleColor.W <= 0f)
+            styleColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+
+        const int pieces = 32;
+        for (var i = 0; i < pieces; i++)
+        {
+            var t0 = i / (float)pieces;
+            var t1 = (i + 1) / (float)pieces;
+            var mid = (t0 + t1) * 0.5f;
+            var alpha = MathF.Sin(mid * MathF.PI) * styleColor.W;
+            drawList.AddLine(new Vector2(pos.X + (width * t0), y), new Vector2(pos.X + (width * t1), y), ImGui.GetColorU32(new Vector4(styleColor.X, styleColor.Y, styleColor.Z, alpha)), 1f);
+        }
+
+        ImGui.Dummy(new Vector2(width, 9f));
+    }
+
 }

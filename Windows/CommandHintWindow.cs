@@ -14,8 +14,9 @@ public sealed class CommandHintWindow : Window, IDisposable
     // Command list here, some rows are examples/placeholders
     private readonly List<HintLine> commands = new()
     {
-        new("/clock", "Toggle the clock overlay", "/clock"),
-        new("/clock settings", "Open Clock settings", "/clock settings"),
+        new("/clock", "Open Clock settings", "/clock"),
+        new("/clock on", "Show the clock overlay", "/clock on"),
+        new("/clock off", "Hide the clock overlay", "/clock off"),
         new("/clock timezone <timezone>", "Change the main clock timezone", "/clock timezone "),
         new("/clock format 12|24|12s|24s|weekday|date", "Change the time format", "/clock format "),
         new("/clock colon default|always|hidden|slow|fast", "Change colon animation", "/clock colon "),
@@ -24,7 +25,7 @@ public sealed class CommandHintWindow : Window, IDisposable
         new("/clock lock", "Lock clock movement", "/clock lock"),
         new("/clock unlock", "Unlock clock movement", "/clock unlock"),
         new("/clock profile next|list|set <n>|add <name>|rename <name>|delete", "Manage profiles", "/clock profile "),
-        new("/alarms", "Open settings directly on the Alarms tab", "/alarms"),
+        new("/alarms", "Open alarm overlay", "/alarms"),
     };
 
     private List<HintLine> visible = new();
@@ -51,6 +52,29 @@ public sealed class CommandHintWindow : Window, IDisposable
         Update(string.Empty, Vector2.Zero);
     }
 
+    private static void DrawFadeSeparator()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+        var drawList = ImGui.GetWindowDrawList();
+        var pos = ImGui.GetCursorScreenPos();
+        var y = pos.Y + 4f;
+        var styleColor = ImGui.GetStyle().Colors[(int)ImGuiCol.Separator];
+        if (styleColor.W <= 0f)
+            styleColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+
+        const int pieces = 32;
+        for (var i = 0; i < pieces; i++)
+        {
+            var t0 = i / (float)pieces;
+            var t1 = (i + 1) / (float)pieces;
+            var mid = (t0 + t1) * 0.5f;
+            var alpha = MathF.Sin(mid * MathF.PI) * styleColor.W;
+            drawList.AddLine(new Vector2(pos.X + (width * t0), y), new Vector2(pos.X + (width * t1), y), ImGui.GetColorU32(new Vector4(styleColor.X, styleColor.Y, styleColor.Z, alpha)), 1f);
+        }
+
+        ImGui.Dummy(new Vector2(width, 9f));
+    }
+
     public void Dispose()
     {
     }
@@ -65,10 +89,11 @@ public sealed class CommandHintWindow : Window, IDisposable
         // The popup is only a hint list; it should disappear once the typed command is completed.
         var query = typed.Trim();
         visible = commands
-            .Where(line => Matches(line, query))
-            .OrderBy(line => line.SortText.StartsWith(query, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .Where(line => Matches(line, query) || (query.StartsWith("/clock", StringComparison.OrdinalIgnoreCase) && line.Command == "/alarms"))
+            .OrderBy(line => line.Command == "/alarms" && query.StartsWith("/clock", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(line => line.SortText.StartsWith(query, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .ThenBy(line => line.SortText.Length)
-            .Take(10)
+            .Take(12)
             .ToList();
     }
 
@@ -112,7 +137,7 @@ public sealed class CommandHintWindow : Window, IDisposable
         }
 
         ImGui.TextColored(new Vector4(1f, 0.84f, 0.42f, 1f), t("Clock commands"));
-        ImGui.Separator();
+        DrawFadeSeparator();
 
         foreach (var line in visible)
         {
@@ -129,7 +154,7 @@ public sealed class CommandHintWindow : Window, IDisposable
 
     public override bool DrawConditions()
     {
-        return IsOpen && !hideExact && typed.StartsWith("/clock", StringComparison.OrdinalIgnoreCase) && visible.Count > 0;
+        return IsOpen && !hideExact && (typed.StartsWith("/clock", StringComparison.OrdinalIgnoreCase) || typed.StartsWith("/alarms", StringComparison.OrdinalIgnoreCase)) && visible.Count > 0;
     }
 
     private bool IsCompleteCommand(string text)

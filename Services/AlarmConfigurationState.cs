@@ -13,7 +13,8 @@ public partial class Configuration
     public string AlarmEditorMessage = "";
     public string AlarmEditorLastLocalDateText = "";
     public string AlarmEditorDateOverrideText = "";
-    public int AlarmSoundId = 8;
+    public int AlarmSoundId = 9;
+    public bool AlarmSoundRepeats = true;
     public bool AlarmEditorSnoozeEnabled = false;
     public int AlarmEditorSnoozeMinutes = 5;
     public AlarmRepeatMode AlarmEditorRepeatMode = AlarmRepeatMode.None;
