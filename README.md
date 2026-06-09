@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🕒 Clock [![Clock Downloads Count](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fkamori.goats.dev%2FPlugin%2FDownloadCounts&query=%24.Clock&label=&style=flat-square&color=gold)](https://kamori.goats.dev/Plugin/DownloadCounts)[![Downloads](https://img.shields.io/badge/-Downloads-lightgrey?style=flat-square)](https://kamori.goats.dev/Plugin/DownloadCounts)
+# 🕒 Clock [![Clock Downloads Count](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fkamori.goats.dev%2FPlugin%2FDownloadCounts&query=%24.Clock&label=&style=plastic&color=gold)](https://kamori.goats.dev/Plugin/DownloadCounts)[![Downloads](https://img.shields.io/badge/-Downloads-lightgrey?style=plastic)](https://kamori.goats.dev/Plugin/DownloadCounts)
 
 ### A customizable timezone clock, alarm and time utility for FFXIV.
 
