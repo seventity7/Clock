@@ -3,6 +3,7 @@ using System.Globalization;
 
 namespace Clock;
 
+// Shared clock/date formatting helpers.
 public static class TimeFormatHelper
 {
     public static readonly string[] Names =

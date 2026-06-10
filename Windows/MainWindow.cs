@@ -5,9 +5,11 @@ using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.Utility.Raii;
 
 namespace Clock.Windows;
 
+// Main clock window and rendering flow.
 public class MainWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
@@ -23,6 +25,7 @@ public class MainWindow : Window, IDisposable
     private const float MainPanelExtraSize = 5.5f;
     private const float LocalPanelExtraSize = 6.5f;
     private const float PanelRoundingReduction = 1.5f;
+    private IDisposable?[]? windowStyleScopes;
 
     public MainWindow(Plugin plugin)
         : base("###ClockMainWindow")
@@ -95,11 +98,16 @@ public class MainWindow : Window, IDisposable
         var totalSize = totalContentSize + new Vector2(InvisibleWindowPadding * 2.0f, InvisibleWindowPadding * 2.0f);
         ImGui.SetNextWindowSize(totalSize, ImGuiCond.Always);
 
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0.0f);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 0.0f);
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, Vector4.Zero);
+        DisposeWindowStyleScopes();
+        windowStyleScopes =
+        [
+            ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, Vector2.Zero),
+            ImRaii.PushStyle(ImGuiStyleVar.WindowBorderSize, 0.0f),
+            ImRaii.PushStyle(ImGuiStyleVar.WindowRounding, 0.0f),
+            ImRaii.PushColor(ImGuiCol.WindowBg, Vector4.Zero)
+        ];
     }
+    // Draw paths are intentionally explicit; tiny UI changes are easier to spot this way.
 
     public override void Draw()
     {
@@ -229,7 +237,7 @@ public class MainWindow : Window, IDisposable
         {
             var line = lines[i];
             var size = GetOverlayLineSize(profile, line);
-            var lineX = x + MathF.Floor((width - size.X) * 0.5f);
+            var lineX = x + MathF.Floor((width - size.X) * 0.5f) + line.HorizontalOffset;
             var lineStyle = GetStyleMetrics(line.DisplayStyle);
             var shadow = line.ShowShadowText ? line.ShadowColor : new Vector4(0, 0, 0, 0);
             var labelScale = GetOverlayLabelScale(profile, line.Scale);
@@ -265,10 +273,10 @@ public class MainWindow : Window, IDisposable
         var lines = new List<OverlayLine>();
 
         if (plugin.Configuration.ShowNextAlarmOnOverlay && TryBuildNextAlarmLine(out var alarmLine))
-            lines.Add(new OverlayLine(alarmLine.Label, alarmLine.TimeText, Math.Clamp(plugin.Configuration.NextAlarmOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.NextAlarmOverlayVerticalOffset, profile.NextAlarmOverlayTextColor, profile.NextAlarmOverlayShadowColor, profile.NextAlarmOverlayDisplayStyle, profile.NextAlarmOverlayShowShadowText));
+            lines.Add(new OverlayLine(alarmLine.Label, alarmLine.TimeText, Math.Clamp(plugin.Configuration.NextAlarmOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.NextAlarmOverlayVerticalOffset, plugin.Configuration.NextAlarmOverlayHorizontalOffset, profile.NextAlarmOverlayTextColor, profile.NextAlarmOverlayShadowColor, profile.NextAlarmOverlayDisplayStyle, profile.NextAlarmOverlayShowShadowText));
 
         if (plugin.Configuration.ShowMaintenanceOnOverlay && TryBuildMaintenanceLine(out var maintenanceLine))
-            lines.Add(new OverlayLine(maintenanceLine.Label, maintenanceLine.TimeText, Math.Clamp(plugin.Configuration.MaintenanceOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.MaintenanceOverlayVerticalOffset, profile.MaintenanceOverlayTextColor, profile.MaintenanceOverlayShadowColor, profile.MaintenanceOverlayDisplayStyle, profile.MaintenanceOverlayShowShadowText));
+            lines.Add(new OverlayLine(maintenanceLine.Label, maintenanceLine.TimeText, Math.Clamp(plugin.Configuration.MaintenanceOverlayTextScale, 0.45f, 1.8f), plugin.Configuration.MaintenanceOverlayVerticalOffset, 0f, profile.MaintenanceOverlayTextColor, profile.MaintenanceOverlayShadowColor, profile.MaintenanceOverlayDisplayStyle, profile.MaintenanceOverlayShowShadowText));
 
         return lines;
     }
@@ -345,7 +353,7 @@ public class MainWindow : Window, IDisposable
 
     private readonly record struct OverlayTextParts(string Label, string TimeText);
 
-    private readonly record struct OverlayLine(string Label, string TimeText, float Scale, float VerticalOffset, Vector4 TextColor, Vector4 ShadowColor, ClockDisplayStyle DisplayStyle, bool ShowShadowText);
+    private readonly record struct OverlayLine(string Label, string TimeText, float Scale, float VerticalOffset, float HorizontalOffset, Vector4 TextColor, Vector4 ShadowColor, ClockDisplayStyle DisplayStyle, bool ShowShadowText);
 
     private static float GetOverlayLabelScale(ClockProfile profile, float scale)
     {
@@ -371,8 +379,19 @@ public class MainWindow : Window, IDisposable
 
     public override void PostDraw()
     {
-        ImGui.PopStyleColor();
-        ImGui.PopStyleVar(3);
+        DisposeWindowStyleScopes();
+    }
+
+    // The main clock window styling is intentionaly scoped around the invisible host window so themes rendering stays doesnt affect the rest of Dalamud UI.
+    private void DisposeWindowStyleScopes()
+    {
+        if (windowStyleScopes == null)
+            return;
+
+        for (var i = windowStyleScopes.Length - 1; i >= 0; i--)
+            windowStyleScopes[i]?.Dispose();
+
+        windowStyleScopes = null;
     }
 
     private static float GetLocalTopOverflow(ClockProfile profile)

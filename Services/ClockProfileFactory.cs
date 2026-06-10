@@ -1,7 +1,10 @@
 using System.Numerics;
 
+// Preset creation is deliberately repetitive so individual themes are easy to tweak later.
+
 namespace Clock;
 
+// Builds the built-in profile presets.
 public static class ClockProfileFactory
 {
     public static ClockProfile CreatePresetProfile(string name, ClockPreset preset)

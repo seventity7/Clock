@@ -4,9 +4,14 @@ using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.Utility.Raii;
+
+// Kept the window separate to avoid crowding the main plugin class.
+
 
 namespace Clock.Windows;
 
+// Lightweight helper window for command reminders.
 public sealed class CommandHintWindow : Window, IDisposable
 {
     private readonly Func<string, string> t;
@@ -33,6 +38,7 @@ public sealed class CommandHintWindow : Window, IDisposable
     private Vector2 anchor;
     private Vector2 lastSize = new(430f, 190f);
     private bool hideExact;
+    private IDisposable?[]? styleScopes;
 
     public CommandHintWindow(Func<string, string> t)
         : base("###ClockCommandHints")
@@ -114,18 +120,33 @@ public sealed class CommandHintWindow : Window, IDisposable
         ImGui.SetNextWindowPos(pos, ImGuiCond.Always);
 
         // Keep this styling local to the hint popup to keep the normal Clock windows/buttons themes.
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8f, 7f));
-        ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(4f, 3f));
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1f);
-        ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.03f, 0.03f, 0.035f, 0.92f));
-        ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.95f, 0.74f, 0.32f, 0.72f));
+        DisposeStyleScopes();
+        styleScopes =
+        [
+            ImRaii.PushStyle(ImGuiStyleVar.WindowPadding, new Vector2(8f, 7f)),
+            ImRaii.PushStyle(ImGuiStyleVar.ItemSpacing, new Vector2(4f, 3f)),
+            ImRaii.PushStyle(ImGuiStyleVar.WindowBorderSize, 1f),
+            ImRaii.PushColor(ImGuiCol.WindowBg, new Vector4(0.03f, 0.03f, 0.035f, 0.92f)),
+            ImRaii.PushColor(ImGuiCol.Border, new Vector4(0.95f, 0.74f, 0.32f, 0.72f))
+        ];
     }
 
     public override void PostDraw()
     {
-        ImGui.PopStyleColor(2);
-        ImGui.PopStyleVar(3);
+        DisposeStyleScopes();
     }
+
+    private void DisposeStyleScopes()
+    {
+        if (styleScopes == null)
+            return;
+
+        for (var i = styleScopes.Length - 1; i >= 0; i--)
+            styleScopes[i]?.Dispose();
+
+        styleScopes = null;
+    }
+    // Draw paths are intentionally explicit; tiny UI changes are easier to spot this way.
 
     public override void Draw()
     {

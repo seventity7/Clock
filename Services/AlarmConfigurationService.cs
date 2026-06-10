@@ -2,10 +2,15 @@ using System;
 using System.Globalization;
 using System.Linq;
 
+// Alarm cleanup lives here so I don't forget about the migrations
+
+
 namespace Clock;
 
+// Normalizes alarm configuration after loading, including old settings from earlier versions.
 public static class AlarmConfigurationService
 {
+    // Normalize loaded configs before anything else gets a chance to depend on them.
     public static void EnsureInitialized(Configuration configuration)
     {
         if (configuration.Alarms == null)
@@ -21,7 +26,11 @@ public static class AlarmConfigurationService
     private static void NormalizeAlarmTimeZones(Configuration configuration)
     {
         foreach (var alarm in configuration.Alarms)
-            alarm.GetEffectiveTimeZoneId();
+        {
+            var alarmTimeZoneId = alarm.GetEffectiveTimeZoneId();
+            if (TimeZoneHelper.IsEorzeaTime(alarmTimeZoneId) && alarm.SpecialTriggerUtc <= DateTime.MinValue)
+                alarm.SpecialTriggerUtc = PrepareSpecialTriggerUtc(alarmTimeZoneId, alarm.DateTimeText);
+        }
     }
 
     private static void MigrateLegacyCustomAlarm(Configuration configuration)
@@ -44,6 +53,7 @@ public static class AlarmConfigurationService
                 Enabled = configuration.CustomAlarmEnabled,
                 HasTriggered = false,
                 SnoozedUntilUtc = DateTime.MinValue,
+                SpecialTriggerUtc = DateTime.MinValue,
                 SnoozeCanceled = false,
                 SnoozeTriggered = false
             });
@@ -90,13 +100,31 @@ public static class AlarmConfigurationService
 
         configuration.AlarmEditorLastLocalDateText = localDateText;
 
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZoneId);
+        var zoneNow = TimeZoneHelper.IsEorzeaTime(editorTimeZoneId)
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.Local)
+            : TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZoneId);
         configuration.AlarmEditorDay = Math.Clamp(
             zoneNow.Day,
             1,
             DateTime.DaysInMonth(zoneNow.Year, zoneNow.Month));
     }
 
+
+    private static DateTime PrepareSpecialTriggerUtc(string alarmTimeZoneId, string dateTimeText)
+    {
+        if (!TimeZoneHelper.IsEorzeaTime(alarmTimeZoneId))
+            return DateTime.MinValue;
+
+        if (!DateTime.TryParseExact(dateTimeText, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var editorLocal))
+            return DateTime.MinValue;
+
+        return TimeZoneHelper.TryGetEditorTriggerUtc(editorLocal, alarmTimeZoneId, out var triggerUtc)
+            ? triggerUtc
+            : DateTime.MinValue;
+    }
+
+    // Editor state is the single source for alarm creation,
+    // including chat-created alarms; this should keep repeat, snooze and timezone behavior consistent.
     public static void AddFromEditor(Configuration configuration, string alarmTimeZoneId)
     {
         var dateTimeText = BuildEditorDateTimeText(configuration, alarmTimeZoneId);
@@ -111,6 +139,7 @@ public static class AlarmConfigurationService
             Enabled = true,
             HasTriggered = false,
             SnoozedUntilUtc = DateTime.MinValue,
+            SpecialTriggerUtc = PrepareSpecialTriggerUtc(alarmTimeZoneId, dateTimeText),
             SnoozeCanceled = false,
             SnoozeTriggered = false,
             SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled,
@@ -137,6 +166,7 @@ public static class AlarmConfigurationService
         alarm.Enabled = true;
         alarm.HasTriggered = false;
         alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SpecialTriggerUtc = PrepareSpecialTriggerUtc(alarmTimeZoneId, dateTimeText);
         alarm.SnoozeCanceled = false;
         alarm.SnoozeTriggered = false;
         alarm.SnoozeEnabled = configuration.AlarmEditorSnoozeEnabled;
@@ -163,6 +193,7 @@ public static class AlarmConfigurationService
         alarm.Enabled = true;
         alarm.HasTriggered = false;
         alarm.SnoozedUntilUtc = DateTime.MinValue;
+        alarm.SpecialTriggerUtc = PrepareSpecialTriggerUtc(alarmTimeZoneId, alarm.DateTimeText);
         alarm.SnoozeCanceled = false;
         alarm.SnoozeTriggered = false;
         return true;
@@ -170,7 +201,9 @@ public static class AlarmConfigurationService
 
     public static string BuildEditorDateTimeText(Configuration configuration, string editorTimeZoneId)
     {
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZoneId);
+        var zoneNow = TimeZoneHelper.IsEorzeaTime(editorTimeZoneId)
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.Local)
+            : TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorTimeZoneId);
         var year = zoneNow.Year;
         var month = zoneNow.Month;
         // Chat time conversion can pre-fill an alarm for a future date, so this override keeps month/year intact while the editor still shows the normal day control.
@@ -216,7 +249,9 @@ public static class AlarmConfigurationService
             return false;
 
         var snoozeMinutes = Math.Clamp(alarm.SnoozeMinutes <= 0 ? 5 : alarm.SnoozeMinutes, 1, 120);
-        alarm.SnoozedUntilUtc = baseUtc.AddMinutes(snoozeMinutes);
+        alarm.SnoozedUntilUtc = TimeZoneHelper.IsEorzeaTime(alarm.GetEffectiveTimeZoneId())
+            ? TimeZoneHelper.AddEorzeaMinutes(baseUtc, snoozeMinutes)
+            : baseUtc.AddMinutes(snoozeMinutes);
         return true;
     }
 
@@ -242,7 +277,7 @@ public static class AlarmConfigurationService
         }
 
         if (alarm.RepeatMode == AlarmRepeatMode.None)
-            return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out triggerUtc);
+            return alarm.TryGetStoredTriggerUtc(out triggerUtc);
 
         return TryGetNextRecurringUtc(alarm, DateTime.UtcNow, out triggerUtc);
     }
@@ -250,7 +285,7 @@ public static class AlarmConfigurationService
     public static bool TryGetNextRecurringUtc(AlarmEntry alarm, DateTime fromUtc, out DateTime triggerUtc)
     {
         triggerUtc = DateTime.MinValue;
-        if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var baseUtc))
+        if (!alarm.TryGetStoredTriggerUtc(out var baseUtc))
             return false;
 
         if (alarm.RepeatMode == AlarmRepeatMode.None)
@@ -259,20 +294,21 @@ public static class AlarmConfigurationService
             return true;
         }
 
-        var zone = TimeZoneHelper.GetTimeZone(alarm.GetEffectiveTimeZoneId());
-        var baseLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(baseUtc, DateTimeKind.Utc), zone);
-        var fromLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(fromUtc, DateTimeKind.Utc), zone);
+        var alarmTimeZoneId = alarm.GetEffectiveTimeZoneId();
+        var baseLocal = TimeZoneHelper.ConvertFromUtc(baseUtc, alarmTimeZoneId);
+        var fromLocal = TimeZoneHelper.ConvertFromUtc(fromUtc, alarmTimeZoneId);
         var candidate = new DateTime(fromLocal.Year, fromLocal.Month, fromLocal.Day, baseLocal.Hour, baseLocal.Minute, 0);
 
         if (candidate < baseLocal.Date.AddHours(baseLocal.Hour).AddMinutes(baseLocal.Minute))
             candidate = baseLocal.Date.AddHours(baseLocal.Hour).AddMinutes(baseLocal.Minute);
 
-        while (!RecurringDayMatches(candidate.DayOfWeek, alarm.RepeatMode, baseLocal.DayOfWeek) || TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(candidate, DateTimeKind.Unspecified), zone) < fromUtc.AddSeconds(-60))
+        while (!RecurringDayMatches(candidate.DayOfWeek, alarm.RepeatMode, baseLocal.DayOfWeek) ||
+               !TimeZoneHelper.TryConvertLocalToUtc(candidate, alarmTimeZoneId, out triggerUtc) ||
+               triggerUtc < fromUtc.AddSeconds(-60))
         {
             candidate = candidate.AddDays(1);
         }
 
-        triggerUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(candidate, DateTimeKind.Unspecified), zone);
         return true;
     }
 
@@ -284,7 +320,7 @@ public static class AlarmConfigurationService
         if (!TryGetNextRecurringUtc(alarm, fromUtc.AddSeconds(61), out var nextUtc))
             return false;
 
-        var local = TimeZoneHelper.ConvertFromUtc(nextUtc, alarm.GetEffectiveTimeZoneId());
+        var local = TimeZoneHelper.ConvertFromUtcForDisplay(nextUtc, alarm.GetEffectiveTimeZoneId());
         alarm.DateTimeText = local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         alarm.HasTriggered = false;
         alarm.SnoozedUntilUtc = DateTime.MinValue;

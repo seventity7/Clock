@@ -7,6 +7,9 @@ using Dalamud.Utility.Signatures;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
 
+// Chat timestamps are fiddly, especially across locales, so this file stays fairly direct.
+
+
 namespace Clock.Services;
 public sealed unsafe class ChatTimestampService : IDisposable
 {
@@ -22,7 +25,7 @@ public sealed unsafe class ChatTimestampService : IDisposable
     private Hook<ApplyTextFormatDelegate>? formatTextHook;
 
     private Utf8String* cachedTimestampText;
-    private DateTime lastTimestampDetourLogUtc = DateTime.MinValue;
+    // Keeping setup close to the constructor makes the object lifecycle easier to trace.
 
     public ChatTimestampService(Configuration configuration, IGameInteropProvider interopProvider, IPluginLog log)
     {
@@ -146,7 +149,6 @@ public sealed unsafe class ChatTimestampService : IDisposable
         var green = Math.Clamp(rawColor.Y, 0f, 1f);
         var blue = Math.Clamp(rawColor.Z, 0f, 1f);
 
-        // Note for me: Alpha zero usually means "not configured" in this settings, so treat it as visible.
         var alpha = rawColor.W <= 0f ? 1f : rawColor.W;
         alpha = Math.Clamp(alpha, 0f, 1f);
 

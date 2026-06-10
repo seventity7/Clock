@@ -10,6 +10,9 @@ using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin.Services;
 using Clock.Windows;
 
+// Hover handling has a few tiny state checks; I left them explicit to make it easier to debug in-game.
+
+
 namespace Clock.Services;
 
 public sealed class ChatTimeHoverService : IDisposable
@@ -69,6 +72,7 @@ public sealed class ChatTimeHoverService : IDisposable
     private readonly DalamudLinkPayload linkPayload;
     private readonly ChatTimeHoverPopupWindow popupWindow;
     private readonly Dictionary<string, (ChatTimeMatch Match, DateTime StoredAtUtc)> recentMatches = new(StringComparer.OrdinalIgnoreCase);
+    // Keeping setup close to the constructor makes the object lifecycle easier to trace.
 
     public ChatTimeHoverService(Configuration config, IChatGui chatGui, IPluginLog log, Func<string, string> translate, ChatTimeHoverPopupWindow popupWindow)
     {
@@ -99,6 +103,10 @@ public sealed class ChatTimeHoverService : IDisposable
             if (message.Message.Payloads.Any(p => p is DalamudLinkPayload link && link.CommandId == ChatTimeLinkId))
                 return;
 
+            // Leave the damn colorized chat lines alone otherwise the game font analyzer will be unstable when native links are mixed into those payloads.
+            if (message.Message.Payloads.Any(p => p is UIForegroundPayload))
+                return;
+
             var targetId = string.IsNullOrWhiteSpace(config.ChatTimeHoverTimeZoneId)
                 ? config.SelectedTimeZoneId
                 : config.ChatTimeHoverTimeZoneId;
@@ -109,7 +117,7 @@ public sealed class ChatTimeHoverService : IDisposable
             if (!TryWrapTimeMentions(message.Message, targetId, out var changed))
                 return;
 
-            // This only replaces the SeString shown in chat. It does not consume, resend or alter the underlying game message.
+            // This only replaces the SeString shown in chat. It doesn't consume, resend or alter the underlying game message.
             message.Message = changed;
         }
         catch (Exception ex)

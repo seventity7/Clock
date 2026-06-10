@@ -42,7 +42,7 @@ I understand that AI tools can produce incorrect suggestions, including mistakes
 
 #### Quality and Compliance Statement
 
-This plugin is submitted with the understanding that code produced with AI assistance is held to the same standard as code written manually. The use of AI does not reduce my obligation to ensure correctness, maintainability, readability, safety or compliance with Dalamud repository expectations.
+This plugin is submitted with the understanding that code produced with AI assistance is held to the same standard as code written manually. The use of AI doesn't reduce my obligation to ensure correctness, maintainability, readability, safety or compliance with Dalamud repository expectations.
 
 #### Assets Disclosure
 

@@ -8,6 +8,9 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
+// Lodestone parsing changes from time to time, so the checks below stay defensive.
+
+
 namespace Clock.Services;
 
 public sealed class LodestoneMaintenanceInfo
@@ -90,6 +93,7 @@ public sealed class LodestoneMaintenanceService : IDisposable
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly HttpClient httpClient = new();
+    // Keeping setup close to the constructor makes the object lifecycle easier to trace.
 
     public LodestoneMaintenanceService()
     {

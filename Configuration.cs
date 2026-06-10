@@ -5,8 +5,12 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 
+// Mostly knobs and persisted values; Old configs will still load cleanly.
+
+
 namespace Clock;
 
+// Saved numeric values are part of the config, so avoid reshuffling these.
 public enum ClockTimeZone
 {
     EST = 0,
@@ -18,6 +22,7 @@ public enum ClockTimeZone
     ACST = 8
 }
 
+// Display format choices exposed in the settings UI.
 public enum ClockTimeFormat
 {
     TwelveHour = 0,
@@ -37,6 +42,7 @@ public enum ColonAnimationMode
     FastBlink = 4
 }
 
+// Visual styles for the main clock face.
 public enum ClockDisplayStyle
 {
     Classic = 0,
@@ -74,6 +80,7 @@ public enum AlarmRepeatMode
     Weekends = 4
 }
 
+// Presets are user-facing, so the order here has a bit of history behind it.
 public enum ClockPreset
 {
     Classic = 0,
@@ -99,6 +106,7 @@ public enum LocalTimePlacement
     OutsideAboveMainPanel = 1
 }
 
+// Profile data gets serialized directly; public fields are intentional here.
 [Serializable]
 public sealed class ClockProfile
 {
@@ -126,6 +134,7 @@ public sealed class ClockProfile
 
     public ClockDisplayStyle DisplayStyle = ClockDisplayStyle.Classic;
     public ClockLayoutMode LayoutMode = ClockLayoutMode.Horizontal;
+    // The clock font option is profile-based so each visual preset can keep its own readable font without changing every other profile.
     public ClockTimeTextFont TimeTextFont = ClockTimeTextFont.Default;
 
     public ClockDisplayStyle NextAlarmOverlayDisplayStyle = ClockDisplayStyle.Classic;
@@ -268,6 +277,15 @@ public sealed class ClockProfile
 }
 
 [Serializable]
+public sealed class EventRecord
+{
+    public string Key = "";
+    public string Name = "";
+    public string Url = "";
+    public DateTime StartUtc = DateTime.MinValue;
+    public DateTime EndUtc = DateTime.MinValue;
+}
+
 public partial class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 28;
@@ -291,8 +309,23 @@ public partial class Configuration : IPluginConfiguration
     public bool AlarmAnimationsEnabled = true;
     public int AlarmsWindowKeybind = 0;
     public VirtualKey[] AlarmsWindowHotkey = [];
+    // Auto-opening the alarm overlay is configurable so users can keep alarm sounds/messages without forcing a window to open during gameplay.
     public bool OpenAlarmsOverlayOnAlarmTrigger = false;
     public bool ClockAlarmsTopButtonIntroSeen = false;
+
+    public bool EventReminderEnabled = false;
+    public bool EventCreateAlarms = false;
+    public bool EventNotifyOnLogin = true;
+    public bool EventNotifyOneDayBeforeEnd = true;
+    public bool EventNotifyOneWeekBeforeEnd = true;
+    public bool EventNotifyEveryday = false;
+    public List<EventRecord> Events = new();
+    public List<string> EventNoticeKeys = new();
+    public List<string> EventAlarmKeys = new();
+    public string LastEventCheckStatus = "";
+    public string LastEventMessage = "";
+    public DateTime LastEventCheckUtc = DateTime.MinValue;
+
 
     public ClockTimeZone SelectedTimeZone = ClockTimeZone.EST;
     public string SelectedTimeZoneId = "";
@@ -348,6 +381,23 @@ public partial class Configuration : IPluginConfiguration
 
         if (FavoriteTimeZoneIds == null)
             FavoriteTimeZoneIds = new List<string>();
+
+
+        if (Events == null)
+            Events = new List<EventRecord>();
+
+        if (EventNoticeKeys == null)
+            EventNoticeKeys = new List<string>();
+
+        if (EventAlarmKeys == null)
+            EventAlarmKeys = new List<string>();
+
+        EventNoticeKeys.RemoveAll(string.IsNullOrWhiteSpace);
+        EventAlarmKeys.RemoveAll(string.IsNullOrWhiteSpace);
+        if (EventNoticeKeys.Count > 250)
+            EventNoticeKeys = EventNoticeKeys.Skip(EventNoticeKeys.Count - 250).ToList();
+        if (EventAlarmKeys.Count > 250)
+            EventAlarmKeys = EventAlarmKeys.Skip(EventAlarmKeys.Count - 250).ToList();
 
         EnsureConfigurationFeatureState();
         SanitizeChatTimestampOptions();
@@ -515,6 +565,7 @@ public partial class Configuration : IPluginConfiguration
         ActiveProfileIndex = Math.Clamp(ActiveProfileIndex, 0, Profiles.Count - 1);
     }
 
+    // Presets update theme, layout and font together to give users quick complete styles while still allowing manual overrides afterward.
     public void ApplyPresetToActiveProfile(ClockPreset preset)
     {
         var profile = GetActiveProfile();
@@ -631,6 +682,19 @@ public partial class Configuration : IPluginConfiguration
         ChatTimeHoverTimeZoneId = source.ChatTimeHoverTimeZoneId;
         ChatTimeHoverTooltipDurationSeconds = source.ChatTimeHoverTooltipDurationSeconds;
         AlarmAnimationsEnabled = source.AlarmAnimationsEnabled;
+
+        EventReminderEnabled = source.EventReminderEnabled;
+        EventCreateAlarms = source.EventCreateAlarms;
+        EventNotifyOnLogin = source.EventNotifyOnLogin;
+        EventNotifyOneDayBeforeEnd = source.EventNotifyOneDayBeforeEnd;
+        EventNotifyOneWeekBeforeEnd = source.EventNotifyOneWeekBeforeEnd;
+        EventNotifyEveryday = source.EventNotifyEveryday;
+        Events = source.Events;
+        EventNoticeKeys = source.EventNoticeKeys;
+        EventAlarmKeys = source.EventAlarmKeys;
+        LastEventCheckStatus = source.LastEventCheckStatus;
+        LastEventMessage = source.LastEventMessage;
+        LastEventCheckUtc = source.LastEventCheckUtc;
         SelectedTimeZone = source.SelectedTimeZone;
         SelectedTimeZoneId = source.SelectedTimeZoneId;
         FavoriteTimeZoneIds = source.FavoriteTimeZoneIds;
@@ -668,9 +732,11 @@ public partial class Configuration : IPluginConfiguration
         AlarmEditorSnoozeEnabled = source.AlarmEditorSnoozeEnabled;
         AlarmEditorSnoozeMinutes = source.AlarmEditorSnoozeMinutes;
         AlarmEditorRepeatMode = source.AlarmEditorRepeatMode;
+        AlarmEditorTimeZoneId = source.AlarmEditorTimeZoneId;
         ShowNextAlarmOnOverlay = source.ShowNextAlarmOnOverlay;
         NextAlarmOverlayTextScale = source.NextAlarmOverlayTextScale;
         NextAlarmOverlayVerticalOffset = source.NextAlarmOverlayVerticalOffset;
+        NextAlarmOverlayHorizontalOffset = source.NextAlarmOverlayHorizontalOffset;
         NextAlarmOverlayDisplayStyle = source.NextAlarmOverlayDisplayStyle;
         NextAlarmOverlayShowShadowText = source.NextAlarmOverlayShowShadowText;
         NextAlarmOverlayTextColor = source.NextAlarmOverlayTextColor;

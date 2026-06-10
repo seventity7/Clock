@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -22,10 +23,22 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 using Clock.Services;
 using Clock.Windows;
 
+// bryer // The plugin class is a bit of a hub, so the ordering here favours "where I look first" over perfect layering.
+
+
 namespace Clock;
 
+// Main plugin entry point. It wires services together and owns the Dalamud-facing lifecycle.
 public sealed class Plugin : IDalamudPlugin
 {
+
+    // I keep one shared Lodestone state because Events/Maintenance hit different pages but they still share the same external site.
+    private enum LodestoneCheckKind
+    {
+        None,
+        Maintenance,
+        SeasonalEvents
+    }
 
     private const string CommandName = "/clock";
     private const string AlarmsCommand = "/clockalarms";
@@ -43,6 +56,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IToastGui toastGui;
     private readonly IKeyState keyState;
     private readonly LodestoneMaintenanceService maintenanceService = new();
+    private readonly EventService eventService = new();
     private readonly ChatTimestampService chatTimestampService;
     private readonly ChatTimeHoverService chatTimeHoverService;
     private readonly IFontHandle? digitalClockFontHandle;
@@ -50,25 +64,25 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IFontHandle? technologyClockFontHandle;
     private readonly IFontHandle? ka1ClockFontHandle;
     private readonly IFontHandle? countdownClockFontHandle;
-    private readonly IFontHandle? alarmPanelAlarmFontHandle;
-    private readonly IFontHandle? alarmPanelAlarmTitleFontHandle;
-    private readonly IFontHandle? largeAlarmIconFontHandle;
+    private readonly IFontHandle? alarmPanelFont;
+    private readonly IFontHandle? alarmTitleFont;
+    private readonly IFontHandle? largeAlarmIconFont;
 
-    private bool digitalClockFontBuildQueued;
-    private bool digitalClockFontReadyLogged;
-    private bool digitalClockFontLoadLogged;
-    private bool alarmSessionDigitalFontBuildQueued;
-    private bool alarmSessionDigitalFontReadyLogged;
-    private bool alarmSessionDigitalFontLoadLogged;
-    private bool technologyClockFontBuildQueued;
-    private bool technologyClockFontReadyLogged;
-    private bool technologyClockFontLoadLogged;
+    private bool digitalFontQueued;
+    private bool digitalReadyLogged;
+    private bool digitalLoadLogged;
+    private bool alarmFontQueued;
+    private bool alarmReadyLogged;
+    private bool alarmLoadLogged;
+    private bool techFontQueued;
+    private bool techReadyLogged;
+    private bool techLoadLogged;
     private bool ka1ClockFontBuildQueued;
     private bool ka1ClockFontReadyLogged;
     private bool ka1ClockFontLoadLogged;
-    private bool countdownClockFontBuildQueued;
-    private bool countdownClockFontReadyLogged;
-    private bool countdownClockFontLoadLogged;
+    private bool countdownFontQueued;
+    private bool countdownReadyLogged;
+    private bool countdownLoadLogged;
     private bool alarmPanelAlarmFontBuildQueued;
     private bool alarmPanelAlarmFontReadyLogged;
     private bool alarmPanelAlarmFontLoadLogged;
@@ -81,9 +95,17 @@ public sealed class Plugin : IDalamudPlugin
     private bool hasAutoStarted;
     private bool wantedMainWindowOpen;
     private DateTime lastReminderCheckUtc = DateTime.MinValue;
-    private DateTime lastMaintenanceRefreshStartUtc = DateTime.MinValue;
+    private DateTime lastMaintenanceCheckUtc = DateTime.MinValue;
     private Task<LodestoneMaintenanceInfo?>? maintenanceRefreshTask;
-    private bool maintenanceRefreshRequestedManually;
+    private bool maintenanceManual;
+    private bool maintenanceQueued;
+    private bool maintenanceQueuedManual;
+    private long maintenanceQueueOrder;
+    private bool eventQueued;
+    private bool eventQueuedManual;
+    private long eventQueueOrder;
+    private long lodestoneQueueOrder;
+    private LodestoneCheckKind lodestoneCheckKind = LodestoneCheckKind.None;
     private DateTime alarmOverlayUntilUtc = DateTime.MinValue;
     private DateTime alarmOverlayTriggerUtc = DateTime.MinValue;
     private string alarmOverlayTimeZoneId = string.Empty;
@@ -93,8 +115,14 @@ public sealed class Plugin : IDalamudPlugin
     private int repeatingAlarmSoundEffectId;
     private DateTime repeatingAlarmSoundNextUtc = DateTime.MinValue;
 
-    private readonly HashSet<string> triggeredMaintenanceKeys = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<Guid> recentlyTriggeredAlarmIds = new();
+    private Task<IReadOnlyList<EventInfo>>? eventTask;
+    private bool eventTaskManual;
+    private DateTime lastEventCheckUtc = DateTime.MinValue;
+    private bool wasLoggedIn;
+    private bool loginEventNoticePending;
+    private int loginEventSession;
+    private readonly HashSet<string> maintenanceKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<Guid> recentAlarmIds = new();
 
     public Configuration Configuration { get; private set; }
 
@@ -136,22 +164,24 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.EnsureInitialized();
         Configuration.Save();
 
+        // Theme fonts are registered once at startup and then reused by every clock draw path;
+        // keeping them centralized to avoid rebuilding font atlases while the UI is rendering.
         digitalClockFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "digital");
         alarmSessionDigitalFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "alarm session digital", pluginInterface.UiBuilder.FontDefaultSizePx * 1.95f);
         technologyClockFontHandle = CreateClockFontHandle("Technology.ttf", "technology");
         ka1ClockFontHandle = CreateClockFontHandle("ka1.ttf", "ka1");
         countdownClockFontHandle = CreateClockFontHandle("Beautiful Police Officer.otf", "countdown");
-        alarmPanelAlarmFontHandle = CreateWindowsFontHandle("segoeui.ttf", 42f, "alarmPanel alarm");
-        alarmPanelAlarmTitleFontHandle = CreateWindowsFontHandle("segoeui.ttf", 34f, "alarmPanel alarm title");
-        largeAlarmIconFontHandle = CreateDalamudIconFontHandle(48f, "large alarm icon");
-        QueueClockFontBuild(digitalClockFontHandle, ref digitalClockFontBuildQueued);
-        QueueClockFontBuild(alarmSessionDigitalFontHandle, ref alarmSessionDigitalFontBuildQueued);
-        QueueClockFontBuild(technologyClockFontHandle, ref technologyClockFontBuildQueued);
+        alarmPanelFont = CreateWindowsFontHandle("segoeui.ttf", 42f, "alarmPanel alarm");
+        alarmTitleFont = CreateWindowsFontHandle("segoeui.ttf", 34f, "alarmPanel alarm title");
+        largeAlarmIconFont = CreateDalamudIconFontHandle(48f, "large alarm icon");
+        QueueClockFontBuild(digitalClockFontHandle, ref digitalFontQueued);
+        QueueClockFontBuild(alarmSessionDigitalFontHandle, ref alarmFontQueued);
+        QueueClockFontBuild(technologyClockFontHandle, ref techFontQueued);
         QueueClockFontBuild(ka1ClockFontHandle, ref ka1ClockFontBuildQueued);
-        QueueClockFontBuild(countdownClockFontHandle, ref countdownClockFontBuildQueued);
-        QueueClockFontBuild(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued);
-        QueueClockFontBuild(alarmPanelAlarmTitleFontHandle, ref alarmPanelAlarmTitleFontBuildQueued);
-        QueueClockFontBuild(largeAlarmIconFontHandle, ref largeAlarmIconFontBuildQueued);
+        QueueClockFontBuild(countdownClockFontHandle, ref countdownFontQueued);
+        QueueClockFontBuild(alarmPanelFont, ref alarmPanelAlarmFontBuildQueued);
+        QueueClockFontBuild(alarmTitleFont, ref alarmPanelAlarmTitleFontBuildQueued);
+        QueueClockFontBuild(largeAlarmIconFont, ref largeAlarmIconFontBuildQueued);
 
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
@@ -337,12 +367,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckDigitalClockFontState()
     {
-        CheckClockFontState(digitalClockFontHandle, ref digitalClockFontBuildQueued, ref digitalClockFontReadyLogged, ref digitalClockFontLoadLogged, "digital");
+        CheckClockFontState(digitalClockFontHandle, ref digitalFontQueued, ref digitalReadyLogged, ref digitalLoadLogged, "digital");
     }
 
     private void CheckAlarmSessionDigitalFontState()
     {
-        CheckClockFontState(alarmSessionDigitalFontHandle, ref alarmSessionDigitalFontBuildQueued, ref alarmSessionDigitalFontReadyLogged, ref alarmSessionDigitalFontLoadLogged, "alarm session digital");
+        CheckClockFontState(alarmSessionDigitalFontHandle, ref alarmFontQueued, ref alarmReadyLogged, ref alarmLoadLogged, "alarm session digital");
     }
 
     public ILockedImFont? LockAlarmSessionDigitalFont()
@@ -356,7 +386,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckTechnologyClockFontState()
     {
-        CheckClockFontState(technologyClockFontHandle, ref technologyClockFontBuildQueued, ref technologyClockFontReadyLogged, ref technologyClockFontLoadLogged, "technology");
+        CheckClockFontState(technologyClockFontHandle, ref techFontQueued, ref techReadyLogged, ref techLoadLogged, "technology");
     }
 
     private void CheckKa1ClockFontState()
@@ -366,9 +396,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckCountdownClockFontState()
     {
-        CheckClockFontState(countdownClockFontHandle, ref countdownClockFontBuildQueued, ref countdownClockFontReadyLogged, ref countdownClockFontLoadLogged, "countdown");
+        CheckClockFontState(countdownClockFontHandle, ref countdownFontQueued, ref countdownReadyLogged, ref countdownLoadLogged, "countdown");
 
-        CheckClockFontState(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
+        CheckClockFontState(alarmPanelFont, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
     }
 
     public IDisposable PushClockTimeFont(ClockTimeTextFont font)
@@ -438,53 +468,53 @@ public sealed class Plugin : IDalamudPlugin
 
     private void CheckAlarmPanelAlarmFontState()
     {
-        CheckClockFontState(alarmPanelAlarmFontHandle, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
+        CheckClockFontState(alarmPanelFont, ref alarmPanelAlarmFontBuildQueued, ref alarmPanelAlarmFontReadyLogged, ref alarmPanelAlarmFontLoadLogged, "alarmPanel alarm");
     }
 
     public IDisposable PushAlarmPanelAlarmFont()
     {
-        if (alarmPanelAlarmFontHandle == null)
+        if (alarmPanelFont == null)
             return EmptyFontScope.Instance;
 
         CheckAlarmPanelAlarmFontState();
-        return alarmPanelAlarmFontHandle.Available ? alarmPanelAlarmFontHandle.Push() : EmptyFontScope.Instance;
+        return alarmPanelFont.Available ? alarmPanelFont.Push() : EmptyFontScope.Instance;
     }
 
     private void CheckAlarmPanelAlarmTitleFontState()
     {
-        CheckClockFontState(alarmPanelAlarmTitleFontHandle, ref alarmPanelAlarmTitleFontBuildQueued, ref alarmPanelAlarmTitleFontReadyLogged, ref alarmPanelAlarmTitleFontLoadLogged, "alarmPanel alarm title");
+        CheckClockFontState(alarmTitleFont, ref alarmPanelAlarmTitleFontBuildQueued, ref alarmPanelAlarmTitleFontReadyLogged, ref alarmPanelAlarmTitleFontLoadLogged, "alarmPanel alarm title");
     }
 
     public IDisposable PushAlarmPanelAlarmTitleFont()
     {
-        if (alarmPanelAlarmTitleFontHandle == null)
+        if (alarmTitleFont == null)
             return PushAlarmPanelAlarmFont();
 
         CheckAlarmPanelAlarmTitleFontState();
-        return alarmPanelAlarmTitleFontHandle.Available ? alarmPanelAlarmTitleFontHandle.Push() : PushAlarmPanelAlarmFont();
+        return alarmTitleFont.Available ? alarmTitleFont.Push() : PushAlarmPanelAlarmFont();
     }
 
     private void CheckLargeAlarmIconFontState()
     {
-        CheckClockFontState(largeAlarmIconFontHandle, ref largeAlarmIconFontBuildQueued, ref largeAlarmIconFontReadyLogged, ref largeAlarmIconFontLoadLogged, "large alarm icon");
+        CheckClockFontState(largeAlarmIconFont, ref largeAlarmIconFontBuildQueued, ref largeAlarmIconFontReadyLogged, ref largeAlarmIconFontLoadLogged, "large alarm icon");
     }
 
     public IDisposable PushLargeAlarmIconFont()
     {
-        if (largeAlarmIconFontHandle == null)
+        if (largeAlarmIconFont == null)
             return pluginInterface.UiBuilder.IconFontHandle.Push();
 
         CheckLargeAlarmIconFontState();
-        return largeAlarmIconFontHandle.Available ? largeAlarmIconFontHandle.Push() : pluginInterface.UiBuilder.IconFontHandle.Push();
+        return largeAlarmIconFont.Available ? largeAlarmIconFont.Push() : pluginInterface.UiBuilder.IconFontHandle.Push();
     }
 
     public ILockedImFont? LockLargeAlarmIconFont()
     {
-        if (largeAlarmIconFontHandle == null)
+        if (largeAlarmIconFont == null)
             return null;
 
         CheckLargeAlarmIconFontState();
-        return largeAlarmIconFontHandle.Available ? largeAlarmIconFontHandle.Lock() : null;
+        return largeAlarmIconFont.Available ? largeAlarmIconFont.Lock() : null;
     }
 
     private sealed class EmptyFontScope : IDisposable
@@ -493,9 +523,15 @@ public sealed class Plugin : IDalamudPlugin
         public void Dispose() { }
     }
 
+    // Chat tooltip alarms are intentionally committed immediately instead of opening the UI first (old behavior)
+    // because the clicked chat timestamp already contains the final target time.
     private void SetupAlarmFromChatTime(ChatTimeHoverService.ChatAlarmSetupRequest request)
     {
-        ConfigWindow.OpenToAlarmsTabFromChat(request.TargetLocal, request.TargetTimeZoneId);
+        if (!ConfigWindow.CreateAlarmFromChatConversion(request.TargetLocal, request.TargetTimeZoneId))
+            return;
+
+        AlarmOverlayWindow.ShowHistory();
+        OpenAlarmOverlay();
     }
 
     public void RefreshChatTimestampSettings()
@@ -541,7 +577,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var nowUtc = DateTime.UtcNow;
         var localOffset = TimeZoneInfo.Local.GetUtcOffset(nowUtc);
-        // Used only by the Test button for generated examples readable by the parser. Does not affect real chat detection.
+        // Used only by the Test button for generated examples readable by the parser. doesn't affect real chat detection.
         // Keep this list boring and OS-resolvable; the helper below tries both Windows and IANA ids so the same build works outside Windows dev boxes too.
         var known = new[]
         {
@@ -620,6 +656,7 @@ public sealed class Plugin : IDalamudPlugin
         chatTimestampService.Dispose();
         chatTimeHoverService.Dispose();
         maintenanceService.Dispose();
+        eventService.Dispose();
 
         pluginInterface.UiBuilder.Draw -= DrawUI;
         pluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
@@ -636,13 +673,14 @@ public sealed class Plugin : IDalamudPlugin
         technologyClockFontHandle?.Dispose();
         ka1ClockFontHandle?.Dispose();
         countdownClockFontHandle?.Dispose();
-        alarmPanelAlarmFontHandle?.Dispose();
-        alarmPanelAlarmTitleFontHandle?.Dispose();
+        alarmPanelFont?.Dispose();
+        alarmTitleFont?.Dispose();
 
         commandManager.RemoveHandler(CommandName);
         commandManager.RemoveHandler(AlarmsCommand);
         commandManager.RemoveHandler(DirectAlarmsCommand);
     }
+    // A bit verbose, but UI rendering is nicer to adjust when each step is visible.
 
     private void DrawUI()
     {
@@ -750,7 +788,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     // This only reads the currently focused chat text input so command suggestions can follow what the user is typing.
-    // It should avoid addon-name lookups and does not write into the game UI; callers will still null-check the pointer before using it.
+    // It should avoid addon-name lookups and doesn't write into the game UI; callers will still null-check the pointer before using it.
     private unsafe AtkComponentTextInput* GetActiveChatTextInput()
     {
         var module = RaptureAtkModule.Instance();
@@ -804,9 +842,19 @@ public sealed class Plugin : IDalamudPlugin
 
         lastReminderCheckUtc = nowUtc;
 
+        var loggedIn = clientState.IsLoggedIn;
+        var loginDetected = loggedIn && !wasLoggedIn;
+        if (loginDetected)
+        {
+            loginEventSession++;
+            loginEventNoticePending = true;
+        }
+        wasLoggedIn = loggedIn;
+
         CheckAllAlarms(nowUtc);
         UpdateMaintenanceDetection(nowUtc);
         CheckMaintenanceReminder(nowUtc);
+        CheckEvents(nowUtc, loginDetected);
     }
 
     private void CheckAllAlarms(DateTime nowUtc)
@@ -830,7 +878,7 @@ public sealed class Plugin : IDalamudPlugin
 
             if (nowUtc < alarmUtc)
             {
-                recentlyTriggeredAlarmIds.Remove(alarm.Id);
+                recentAlarmIds.Remove(alarm.Id);
                 continue;
             }
 
@@ -841,10 +889,10 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
             }
 
-            if (recentlyTriggeredAlarmIds.Contains(alarm.Id))
+            if (recentAlarmIds.Contains(alarm.Id))
                 continue;
 
-            recentlyTriggeredAlarmIds.Add(alarm.Id);
+            recentAlarmIds.Add(alarm.Id);
             changed = true;
 
             var isSnoozeTrigger = hasPendingSnooze;
@@ -880,23 +928,23 @@ public sealed class Plugin : IDalamudPlugin
     }
 
 
-    private void StartAlarmOverlayVisual(AlarmEntry alarm, DateTime triggerUtc, DateTime nowUtc)
+    private void StartAlarmOverlayVisual(AlarmEntry alarm, DateTime utc, DateTime nowUtc)
     {
         if (!Configuration.AlarmAnimationsEnabled)
             return;
 
         alarmOverlayPreviewActive = false;
-        alarmOverlayTriggerUtc = triggerUtc;
+        alarmOverlayTriggerUtc = utc;
         alarmOverlayTimeZoneId = alarm.GetEffectiveTimeZoneId();
         alarmOverlayUntilUtc = nowUtc.AddSeconds(5.0);
     }
 
-    private void ShowAlarmWindowTriggerSession(AlarmEntry alarm, DateTime triggerUtc)
+    private void ShowAlarmWindowTriggerSession(AlarmEntry alarm, DateTime utc)
     {
         if (!Configuration.OpenAlarmsOverlayOnAlarmTrigger)
             return;
 
-        var alarmLocal = TimeZoneHelper.ConvertFromUtc(triggerUtc, alarm.GetEffectiveTimeZoneId());
+        var alarmLocal = TimeZoneHelper.ConvertFromUtcForDisplay(utc, alarm.GetEffectiveTimeZoneId());
         var alarmTimeText = FormatAlarmSessionTime(alarmLocal, alarm.GetEffectiveTimeZoneId());
         AlarmOverlayWindow.ShowTriggeredAlarm(alarm.Id, alarm.Message, Configuration.AlarmSoundId, alarmTimeText, !alarm.SnoozeEnabled);
         AlarmOverlayWindow.IsOpen = true;
@@ -923,12 +971,14 @@ public sealed class Plugin : IDalamudPlugin
 
         alarm.SnoozeEnabled = true;
         alarm.SnoozeMinutes = Math.Clamp(minutes, 1, 120);
-        alarm.SnoozedUntilUtc = DateTime.UtcNow.AddMinutes(alarm.SnoozeMinutes);
+        alarm.SnoozedUntilUtc = TimeZoneHelper.IsEorzeaTime(alarm.GetEffectiveTimeZoneId())
+            ? TimeZoneHelper.AddEorzeaMinutes(DateTime.UtcNow, alarm.SnoozeMinutes)
+            : DateTime.UtcNow.AddMinutes(alarm.SnoozeMinutes);
         alarm.SnoozeTriggered = false;
         alarm.SnoozeCanceled = false;
         alarm.HasTriggered = true;
         alarm.Enabled = true;
-        recentlyTriggeredAlarmIds.Remove(alarm.Id);
+        recentAlarmIds.Remove(alarm.Id);
         StopRepeatingAlarmSound(alarmId);
         Configuration.Save();
         ShowAlarmToast(T("Alarm snoozed for the next 10 minutes"));
@@ -1000,12 +1050,12 @@ public sealed class Plugin : IDalamudPlugin
         alarmOverlayUntilUtc = DateTime.UtcNow.AddSeconds(5.0);
     }
 
-    public bool TryGetAlarmOverlayVisual(out DateTime triggerUtc, out string timeZoneId, out float progress)
+    public bool TryGetAlarmOverlayVisual(out DateTime utc, out string timeZoneId, out float progress)
     {
         var nowUtc = DateTime.UtcNow;
         if (alarmOverlayUntilUtc <= nowUtc || alarmOverlayTriggerUtc <= DateTime.MinValue || string.IsNullOrWhiteSpace(alarmOverlayTimeZoneId))
         {
-            triggerUtc = DateTime.MinValue;
+            utc = DateTime.MinValue;
             timeZoneId = string.Empty;
             progress = 1.0f;
             alarmOverlayPreviewActive = false;
@@ -1014,13 +1064,13 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!alarmOverlayPreviewActive && !Configuration.AlarmAnimationsEnabled)
         {
-            triggerUtc = DateTime.MinValue;
+            utc = DateTime.MinValue;
             timeZoneId = string.Empty;
             progress = 1.0f;
             return false;
         }
 
-        triggerUtc = alarmOverlayTriggerUtc;
+        utc = alarmOverlayTriggerUtc;
         timeZoneId = alarmOverlayTimeZoneId;
         progress = 1.0f - (float)Math.Clamp((alarmOverlayUntilUtc - nowUtc).TotalSeconds / 5.0, 0.0, 1.0);
         return true;
@@ -1034,7 +1084,7 @@ public sealed class Plugin : IDalamudPlugin
             if (!maintenanceRefreshTask.IsCompleted)
                 return;
 
-            var wasManual = maintenanceRefreshRequestedManually;
+            var wasManual = maintenanceManual;
             try
             {
                 var maintenance = maintenanceRefreshTask.Result;
@@ -1050,32 +1100,27 @@ public sealed class Plugin : IDalamudPlugin
                 log.Warning(ex, "Failed checking Lodestone maintenance news.");
                 if (wasManual)
                 {
-                    Configuration.LastMaintenanceCheckStatus = $"Maintenance check failed: {ex.Message}";
+                    Configuration.LastMaintenanceCheckStatus = string.Format(CultureInfo.InvariantCulture, T("Maintenance check failed: {0}"), ex.Message);
                     Configuration.Save();
                 }
             }
             finally
             {
                 maintenanceRefreshTask = null;
-                maintenanceRefreshRequestedManually = false;
+                maintenanceManual = false;
+                if (lodestoneCheckKind == LodestoneCheckKind.Maintenance)
+                    lodestoneCheckKind = LodestoneCheckKind.None;
+                StartNextQueuedLodestoneCheck(DateTime.UtcNow);
             }
         }
 
         if (!Configuration.MaintenanceReminderEnabled && !Configuration.ShowMaintenanceOnOverlay)
             return;
 
-        if ((nowUtc - lastMaintenanceRefreshStartUtc).TotalHours < 6)
+        if ((nowUtc - lastMaintenanceCheckUtc).TotalHours < 6 || maintenanceQueued)
             return;
 
-        lastMaintenanceRefreshStartUtc = nowUtc;
-        Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
-        Configuration.Save();
-
-        maintenanceRefreshRequestedManually = false;
-        maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync(
-            Configuration.MaintenanceLanguage,
-            Configuration.LastMaintenanceNewsUrl,
-            Configuration.DetectedMaintenanceStartUtc);
+        RequestMaintenanceRefresh(false);
     }
 
     private string ApplyMaintenanceRefreshResult(LodestoneMaintenanceInfo? maintenance)
@@ -1085,7 +1130,7 @@ public sealed class Plugin : IDalamudPlugin
         if (maintenance == null)
         {
             Configuration.Save();
-            return "No active or upcoming maintenance notice was found.";
+            return T("No active or upcoming maintenance notice was found.");
         }
 
         bool changed =
@@ -1107,8 +1152,8 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
 
         return changed
-            ? $"Maintenance notice found: {maintenance.Title}"
-            : string.Format(CultureInfo.InvariantCulture, "Maintenance checked. Latest detected maintenance is already current: {0}.", $"{maintenance.LocalStartText} {maintenance.TimeZoneText}");
+            ? string.Format(CultureInfo.InvariantCulture, T("Maintenance notice found: {0}"), maintenance.Title)
+            : string.Format(CultureInfo.InvariantCulture, T("Maintenance checked. Latest detected maintenance is already current: {0}."), $"{maintenance.LocalStartText} {maintenance.TimeZoneText}");
     }
 
     private void CheckMaintenanceReminder(DateTime nowUtc)
@@ -1150,26 +1195,379 @@ public sealed class Plugin : IDalamudPlugin
             return;
 
         var key = $"{maintenanceUtc:O}:{lead.TotalMinutes}";
-        if (triggeredMaintenanceKeys.Contains(key))
+        if (maintenanceKeys.Contains(key))
             return;
 
-        triggeredMaintenanceKeys.Add(key);
+        maintenanceKeys.Add(key);
 
         var leadText = lead.TotalHours >= 1
             ? (Math.Abs(lead.TotalHours - 24) < 0.01 ? T("24 hours") : T("1 hour"))
             : T("15 minutes");
 
-        var zoneText = string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceTimeZoneText)
+        var zone = string.IsNullOrWhiteSpace(Configuration.DetectedMaintenanceTimeZoneText)
             ? TimeZoneHelper.ToShortText(Configuration.SelectedTimeZoneId)
             : Configuration.DetectedMaintenanceTimeZoneText;
 
-        var whenText = $"{Configuration.DetectedMaintenanceDateTimeText} {zoneText}";
+        var whenText = $"{Configuration.DetectedMaintenanceDateTimeText} {zone}";
         var message = string.Format(CultureInfo.InvariantCulture, T("Scheduled maintenance starts in {0}. ({1})"), leadText, whenText);
         chatGui.Print(T(message), "Clock");
         toastGui.ShowQuest(message, new QuestToastOptions
         {
             PlaySound = false
         });
+    }
+
+    private void CheckEvents(DateTime nowUtc, bool loginDetected)
+    {
+        UpdateEventCheck(nowUtc, loginDetected);
+        var sendLoginNotice = loginEventNoticePending && eventTask == null && !eventQueued;
+        CheckEventNotices(nowUtc, sendLoginNotice);
+        if (sendLoginNotice)
+            loginEventNoticePending = false;
+    }
+
+    private void UpdateEventCheck(DateTime nowUtc, bool loginDetected)
+    {
+        if (eventTask != null)
+        {
+            if (!eventTask.IsCompleted)
+                return;
+
+            var wasManual = eventTaskManual;
+            try
+            {
+                var events = eventTask.Result;
+                var result = ApplyEventCheck(events);
+                if (wasManual)
+                {
+                    Configuration.LastEventCheckStatus = result;
+                    Configuration.Save();
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Warning(ex, "Failed checking Lodestone seasonal events.");
+                if (wasManual)
+                {
+                    Configuration.LastEventCheckStatus = string.Format(CultureInfo.InvariantCulture, T("Seasonal event check failed: {0}"), ex.Message);
+                    Configuration.Save();
+                }
+            }
+            finally
+            {
+                eventTask = null;
+                eventTaskManual = false;
+                if (lodestoneCheckKind == LodestoneCheckKind.SeasonalEvents)
+                    lodestoneCheckKind = LodestoneCheckKind.None;
+                StartNextQueuedLodestoneCheck(DateTime.UtcNow);
+            }
+        }
+
+        if (!Configuration.EventReminderEnabled)
+            return;
+
+        if ((!loginDetected && (nowUtc - lastEventCheckUtc).TotalHours < 6) || eventQueued)
+            return;
+
+        RequestEventCheck(false);
+    }
+
+    private string ApplyEventCheck(IReadOnlyList<EventInfo> events)
+    {
+        Configuration.LastEventCheckUtc = DateTime.UtcNow;
+        Configuration.Events = events.Select(e => new EventRecord
+        {
+            Key = e.Key,
+            Name = e.Name,
+            Url = e.Url,
+            StartUtc = e.StartUtc,
+            EndUtc = e.EndUtc
+        }).ToList();
+
+        Configuration.LastEventMessage = Configuration.Events.Count == 0
+            ? ""
+            : string.Join("\n", Configuration.Events.Select(FormatEventSummary));
+
+        MakeEventAlarms(DateTime.UtcNow);
+        Configuration.Save();
+
+        return Configuration.Events.Count == 0
+            ? "No active seasonal events found."
+            : string.Format(CultureInfo.InvariantCulture, T("{0} active seasonal event(s) found."), Configuration.Events.Count);
+    }
+
+    private void CheckEventNotices(DateTime nowUtc, bool loginDetected)
+    {
+        if (!Configuration.EventReminderEnabled || Configuration.Events.Count == 0)
+            return;
+
+        foreach (var ev in Configuration.Events.ToArray())
+        {
+            if (ev.StartUtc > nowUtc || ev.EndUtc <= nowUtc)
+                continue;
+
+            if (loginDetected && Configuration.EventNotifyOnLogin)
+                SendEventNotice(ev, $"login:{loginEventSession}", false, nowUtc);
+
+            if (Configuration.EventNotifyOneWeekBeforeEnd && nowUtc >= ev.EndUtc.AddDays(-7))
+                SendEventNotice(ev, "week", false, nowUtc);
+
+            if (Configuration.EventNotifyOneDayBeforeEnd && nowUtc >= ev.EndUtc.AddDays(-1))
+                SendEventNotice(ev, "day", false, nowUtc);
+
+            if (Configuration.EventNotifyEveryday)
+                SendEventNotice(ev, $"daily:{TimeZoneInfo.ConvertTimeFromUtc(nowUtc, TimeZoneInfo.Local):yyyyMMdd}", true, nowUtc);
+        }
+
+        Configuration.Save();
+    }
+
+    private void SendEventNotice(EventRecord ev, string reason, bool daily, DateTime nowUtc, bool force = false)
+    {
+        var key = $"{ev.Key}:{reason}";
+        if (!force)
+        {
+            if (Configuration.EventNoticeKeys.Contains(key, StringComparer.OrdinalIgnoreCase))
+                return;
+
+            Configuration.EventNoticeKeys.Add(key);
+            if (Configuration.EventNoticeKeys.Count > 250)
+                Configuration.EventNoticeKeys.RemoveAt(0);
+        }
+
+        var message = daily
+            ? DailyEventMsg(ev, nowUtc)
+            : string.Format(CultureInfo.InvariantCulture, T("Seasonal event: {0} ({1} - {2} {3})"), ev.Name, FormatEventTime(ev.StartUtc), FormatEventTime(ev.EndUtc), LocalZoneShort());
+
+        chatGui.Print(BuildColoredChatNotice("[EVENT]", message));
+        toastGui.ShowQuest(message, new QuestToastOptions
+        {
+            PlaySound = false
+        });
+    }
+
+    private int MakeEventAlarms(DateTime nowUtc, bool recreate = false)
+    {
+        if (!Configuration.EventReminderEnabled || !Configuration.EventCreateAlarms)
+            return 0;
+
+        var messageCulture = GetEventAlarmMessageCulture();
+        var created = 0;
+        foreach (var ev in Configuration.Events)
+        {
+            var utc = DateTime.SpecifyKind(ev.EndUtc, DateTimeKind.Utc).AddDays(-1);
+            if (utc <= nowUtc)
+                continue;
+
+            var key = BuildEventAlarmKey(ev, utc);
+            if (!recreate && Configuration.EventAlarmKeys.Contains(key, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            if (recreate)
+            {
+                Configuration.EventAlarmKeys.RemoveAll(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase));
+                RemoveMatchingEventAlarms(ev, utc);
+            }
+
+            Configuration.Alarms.Add(BuildEventAlarm(ev, utc, messageCulture));
+            Configuration.EventAlarmKeys.Add(key);
+            if (Configuration.EventAlarmKeys.Count > 250)
+                Configuration.EventAlarmKeys.RemoveAt(0);
+
+            created++;
+        }
+
+        return created;
+    }
+
+    public bool RecreateEventAlarms()
+    {
+        var created = MakeEventAlarms(DateTime.UtcNow, true);
+        Configuration.LastEventCheckStatus = created switch
+        {
+            0 => T("No future seasonal event alarms could be recreated."),
+            1 => T("Seasonal event alarm recreated."),
+            _ => string.Format(CultureInfo.InvariantCulture, T("Seasonal event alarms recreated: {0}."), created)
+        };
+        Configuration.Save();
+        return created > 0;
+    }
+
+    private static string BuildEventAlarmKey(EventRecord ev, DateTime utc)
+    {
+        return $"{ev.Key}:alarm:{utc:O}";
+    }
+
+    private AlarmEntry BuildEventAlarm(EventRecord ev, DateTime utc, string messageCulture)
+    {
+        var zoneId = TimeZoneHelper.NormalizeTimeZoneId(Configuration.SelectedTimeZoneId);
+        var local = TimeZoneHelper.ConvertFromUtcForDisplay(utc, zoneId);
+        var messageTemplate = ClockLocalizationService.Translate(messageCulture, "1 Day before {0} Ends");
+        return new AlarmEntry
+        {
+            DateTimeText = local.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+            Message = string.Format(CultureInfo.InvariantCulture, messageTemplate, ev.Name),
+            TimeZoneId = zoneId,
+            Enabled = true,
+            HasTriggered = false,
+            SnoozedUntilUtc = DateTime.MinValue,
+            SpecialTriggerUtc = DateTime.MinValue,
+            SnoozeCanceled = false,
+            SnoozeTriggered = false,
+            SnoozeEnabled = false,
+            SnoozeMinutes = 5,
+            RepeatMode = AlarmRepeatMode.None
+        };
+    }
+
+    private string GetEventAlarmMessageCulture()
+    {
+        var selected = string.IsNullOrWhiteSpace(Configuration.UiLanguageCultureName)
+            ? "en-US"
+            : Configuration.UiLanguageCultureName;
+
+        if (!IsEnglishCulture(selected))
+            return selected;
+
+        var clientCulture = GetClientLanguageCulture();
+        return !IsEnglishCulture(clientCulture) ? clientCulture : selected;
+    }
+
+    private string GetClientLanguageCulture()
+    {
+        return clientState.ClientLanguage.ToString() switch
+        {
+            "Japanese" or "Jp" or "Ja" => "ja-JP",
+            "French" or "Fr" => "fr-FR",
+            "German" or "De" => "de-DE",
+            _ => "en-US"
+        };
+    }
+
+    private static bool IsEnglishCulture(string cultureName)
+    {
+        return string.Equals(cultureName, "en-US", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cultureName, "en-GB", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(cultureName, "en", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void RemoveMatchingEventAlarms(EventRecord ev, DateTime utc)
+    {
+        Configuration.Alarms.RemoveAll(alarm =>
+            alarm.Message.Contains(ev.Name, StringComparison.OrdinalIgnoreCase) &&
+            alarm.TryGetStoredTriggerUtc(out var triggerUtc) &&
+            DateTime.SpecifyKind(triggerUtc, DateTimeKind.Utc) == utc);
+    }
+
+    private string DailyEventMsg(EventRecord ev, DateTime nowUtc)
+    {
+        var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, TimeZoneInfo.Local);
+        var startLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(ev.StartUtc, DateTimeKind.Utc), TimeZoneInfo.Local);
+        var endLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(ev.EndUtc, DateTimeKind.Utc), TimeZoneInfo.Local);
+        var day = Math.Max(1, (int)Math.Floor((nowLocal.Date - startLocal.Date).TotalDays) + 1);
+        var total = Math.Max(day, (int)Math.Ceiling((endLocal - startLocal).TotalDays));
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            T("{0} - Day {1} out of {2} ({3} - {4} {5} {6})"),
+            ev.Name,
+            day,
+            total,
+            startLocal.ToString("MMM dd", CultureInfo.InvariantCulture),
+            endLocal.ToString("MMM dd", CultureInfo.InvariantCulture),
+            endLocal.ToString("HH:mm", CultureInfo.InvariantCulture),
+            LocalZoneShort());
+    }
+
+    public string FormatEventSummary(EventRecord ev)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            T("{0}: {1} to {2} ({3})"),
+            ev.Name,
+            FormatEventTime(ev.StartUtc),
+            FormatEventTime(ev.EndUtc),
+            LocalZoneShort());
+    }
+
+    private static string FormatEventTime(DateTime utc)
+    {
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local).ToString("MMM dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private static string LocalZoneShort()
+    {
+        return TimeZoneHelper.ToShortText(TimeZoneInfo.Local.Id);
+    }
+
+    private SeString ColoredEventMsg(string msg, EventRecord ev)
+    {
+        var startDate = LocalDate(ev.StartUtc);
+        var endDate = LocalDate(ev.EndUtc);
+        var endTime = LocalTime(ev.EndUtc);
+        var zone = LocalZoneShort();
+        var text = msg;
+        var yellow = new List<(int Start, int End)>
+        {
+            FindRange(text, startDate),
+            FindRange(text, endDate),
+            FindRange(text, $"{endTime} {zone}")
+        };
+
+        var day = Regex.Match(text, @"Day\s+\d+", RegexOptions.IgnoreCase);
+        if (day.Success)
+            yellow.Add((day.Index, day.Index + day.Length));
+
+        var total = Regex.Match(text, @"out\s+of\s+(?<count>\d+)", RegexOptions.IgnoreCase);
+        if (total.Success)
+        {
+            var count = total.Groups["count"];
+            yellow.Add((count.Index, count.Index + count.Length));
+        }
+
+        return RecolorEventMsg(text, yellow);
+    }
+
+    private SeString RecolorEventMsg(string text, IEnumerable<(int Start, int End)> yellow)
+    {
+        var builder = new SeStringBuilder();
+        builder.Add(new UIForegroundPayload(45));
+
+        var cursor = 0;
+        foreach (var range in yellow.Where(r => r.Start >= 0 && r.End > r.Start).OrderBy(r => r.Start))
+        {
+            if (range.Start < cursor)
+                continue;
+
+            if (range.Start > cursor)
+                builder.AddText(text[cursor..range.Start]);
+
+            builder.Add(new UIForegroundPayload(559));
+            builder.AddText(text[range.Start..range.End]);
+            builder.Add(new UIForegroundPayload(45));
+            cursor = range.End;
+        }
+
+        if (cursor < text.Length)
+            builder.AddText(text[cursor..]);
+
+        builder.Add(new UIForegroundPayload(0));
+        return builder.BuiltString;
+    }
+
+    private static string LocalDate(DateTime utc)
+    {
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local).ToString("MMM dd", CultureInfo.InvariantCulture);
+    }
+
+    private static string LocalTime(DateTime utc)
+    {
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local).ToString("HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private static (int Start, int End) FindRange(string text, string value)
+    {
+        var index = text.IndexOf(value, StringComparison.Ordinal);
+        return index < 0 ? (-1, -1) : (index, index + value.Length);
     }
 
     private void OnCommand(string command, string args)
@@ -1628,10 +2026,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private SeString BuildColoredAlarmMessage(string message)
     {
+        return BuildColoredChatNotice("[ALARM]", message);
+    }
+
+    private SeString BuildColoredChatNotice(string title, string message)
+    {
         var builder = new SeStringBuilder();
 
         builder.Add(new UIForegroundPayload(559));
-        builder.AddText("[ALARM]");
+        builder.AddText(title);
         builder.Add(new UIForegroundPayload(0));
         builder.AddText("  ");
 
@@ -1672,8 +2075,8 @@ public sealed class Plugin : IDalamudPlugin
             Configuration.EnsureInitialized();
             Configuration.Save();
 
-            triggeredMaintenanceKeys.Clear();
-            recentlyTriggeredAlarmIds.Clear();
+            maintenanceKeys.Clear();
+            recentAlarmIds.Clear();
             pluginInterface.UiBuilder.DisableCutsceneUiHide = !Configuration.HideDuringCutscenes;
 
             error = string.Empty;
@@ -1692,32 +2095,160 @@ public sealed class Plugin : IDalamudPlugin
         return ClockLocalizationService.Translate(Configuration.UiLanguageCultureName, text);
     }
 
+    public void TestEventNotice()
+    {
+        var nowUtc = DateTime.UtcNow;
+        var ev = Configuration.Events
+            .Where(e => e.StartUtc <= nowUtc && e.EndUtc > nowUtc)
+            .OrderBy(e => e.EndUtc)
+            .FirstOrDefault();
+
+        if (ev != null)
+        {
+            SendSafeTestEventNotice(ev, nowUtc);
+            Configuration.Save();
+            return;
+        }
+
+        var sampleEnd = nowUtc.AddDays(14).Date.AddHours(23).AddMinutes(59);
+        var sample = new EventRecord
+        {
+            Key = $"test-{nowUtc:yyyyMMddHHmmss}",
+            Name = T("Test Event"),
+            Url = "",
+            StartUtc = nowUtc.AddDays(-12),
+            EndUtc = sampleEnd
+        };
+        SendSafeTestEventNotice(sample, nowUtc);
+    }
+
+    private void SendSafeTestEventNotice(EventRecord ev, DateTime nowUtc)
+    {
+        var message = DailyEventMsg(ev, nowUtc);
+        chatGui.Print(BuildColoredChatNotice("[EVENT]", message));
+        toastGui.ShowQuest(message, new QuestToastOptions
+        {
+            PlaySound = false
+        });
+    }
+
     public bool IsMaintenanceRefreshRunning => maintenanceRefreshTask is { IsCompleted: false };
 
-    public bool RequestMaintenanceRefresh(bool forceRefresh)
+    public bool IsMaintenanceCheckQueued => maintenanceQueued;
+
+    public bool IsEventCheckRunning => eventTask is { IsCompleted: false };
+
+    public bool IsEventCheckQueued => eventQueued;
+
+    public bool IsLodestoneCheckRunning => IsMaintenanceRefreshRunning || IsEventCheckRunning;
+
+    public bool RequestEventCheck(bool forceRefresh)
     {
-        if (maintenanceRefreshTask is { IsCompleted: false })
+        if (IsEventCheckRunning || eventQueued)
             return false;
 
         var nowUtc = DateTime.UtcNow;
-        lastMaintenanceRefreshStartUtc = nowUtc;
-        maintenanceRefreshRequestedManually = forceRefresh;
+        if (IsMaintenanceRefreshRunning)
+        {
+            QueueEventCheck(nowUtc, forceRefresh);
+            return true;
+        }
+
+        StartEventCheck(nowUtc, forceRefresh);
+        return true;
+    }
+
+    private void QueueEventCheck(DateTime nowUtc, bool manual)
+    {
+        lastEventCheckUtc = nowUtc;
+        eventQueued = true;
+        eventQueuedManual = manual;
+        eventQueueOrder = ++lodestoneQueueOrder;
+        Configuration.LastEventCheckUtc = nowUtc;
+        if (manual)
+            Configuration.LastEventCheckStatus = T("Seasonal event check queued.");
+        Configuration.Save();
+    }
+
+    private void StartEventCheck(DateTime nowUtc, bool manual)
+    {
+        lastEventCheckUtc = nowUtc;
+        eventQueued = false;
+        eventQueuedManual = false;
+        eventQueueOrder = 0;
+        eventTaskManual = manual;
+        lodestoneCheckKind = LodestoneCheckKind.SeasonalEvents;
+        Configuration.LastEventCheckUtc = nowUtc;
+        Configuration.LastEventCheckStatus = manual ? T("Checking Lodestone seasonal events...") : Configuration.LastEventCheckStatus;
+        Configuration.Save();
+        eventTask = eventService.GetActiveEventsAsync();
+    }
+
+    public bool RequestMaintenanceRefresh(bool forceRefresh)
+    {
+        if (IsMaintenanceRefreshRunning || maintenanceQueued)
+            return false;
+
+        var nowUtc = DateTime.UtcNow;
+        if (IsEventCheckRunning)
+        {
+            QueueMaintenanceRefresh(nowUtc, forceRefresh);
+            return true;
+        }
+
+        StartMaintenanceRefresh(nowUtc, forceRefresh);
+        return true;
+    }
+
+    private void QueueMaintenanceRefresh(DateTime nowUtc, bool manual)
+    {
+        lastMaintenanceCheckUtc = nowUtc;
+        maintenanceQueued = true;
+        maintenanceQueuedManual = manual;
+        maintenanceQueueOrder = ++lodestoneQueueOrder;
         Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
-        Configuration.LastMaintenanceCheckStatus = forceRefresh ? "Checking Lodestone maintenance notices..." : Configuration.LastMaintenanceCheckStatus;
+        if (manual)
+            Configuration.LastMaintenanceCheckStatus = T("Maintenance check queued.");
+        Configuration.Save();
+    }
+
+    private void StartMaintenanceRefresh(DateTime nowUtc, bool manual)
+    {
+        lastMaintenanceCheckUtc = nowUtc;
+        maintenanceQueued = false;
+        maintenanceQueuedManual = false;
+        maintenanceQueueOrder = 0;
+        maintenanceManual = manual;
+        lodestoneCheckKind = LodestoneCheckKind.Maintenance;
+        Configuration.LastMaintenanceDetectionTimestampUtc = nowUtc;
+        Configuration.LastMaintenanceCheckStatus = manual ? T("Checking Lodestone maintenance notices...") : Configuration.LastMaintenanceCheckStatus;
         Configuration.Save();
 
         maintenanceRefreshTask = maintenanceService.GetLatestMaintenanceAsync(
             Configuration.MaintenanceLanguage,
             Configuration.LastMaintenanceNewsUrl,
             Configuration.DetectedMaintenanceStartUtc,
-            forceRefresh);
+            manual);
+    }
 
-        return true;
+    private void StartNextQueuedLodestoneCheck(DateTime nowUtc)
+    {
+        if (IsLodestoneCheckRunning)
+            return;
+
+        if (maintenanceQueued && (!eventQueued || maintenanceQueueOrder <= eventQueueOrder))
+        {
+            StartMaintenanceRefresh(nowUtc, maintenanceQueuedManual);
+            return;
+        }
+
+        if (eventQueued)
+            StartEventCheck(nowUtc, eventQueuedManual);
     }
 
     public void ClearRecentlyTriggeredAlarm(Guid alarmId)
     {
-        recentlyTriggeredAlarmIds.Remove(alarmId);
+        recentAlarmIds.Remove(alarmId);
     }
 
     public void ToggleConfigUi() => ConfigWindow.Toggle();
@@ -1729,6 +2260,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void ToggleAlarmOverlay() => AlarmOverlayWindow.Toggle();
 
+    // Single entry point for showing /alarms so chat-created alarms, command handling and UI shortcuts all open the same overlay instance.
     public void OpenAlarmOverlay() => AlarmOverlayWindow.IsOpen = true;
 
     public void ToggleMainUi()

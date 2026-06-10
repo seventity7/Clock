@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 
+// It is intentionally plain because Dalamud config serialization seens to be happier that way.
+
+
 namespace Clock;
 
 public partial class Configuration
@@ -18,9 +21,11 @@ public partial class Configuration
     public bool AlarmEditorSnoozeEnabled = false;
     public int AlarmEditorSnoozeMinutes = 5;
     public AlarmRepeatMode AlarmEditorRepeatMode = AlarmRepeatMode.None;
+    public string AlarmEditorTimeZoneId = "";
     public bool ShowNextAlarmOnOverlay = false;
     public float NextAlarmOverlayTextScale = 0.72f;
     public float NextAlarmOverlayVerticalOffset = 0.0f;
+    public float NextAlarmOverlayHorizontalOffset = 0.0f;
     public ClockDisplayStyle NextAlarmOverlayDisplayStyle = ClockDisplayStyle.Classic;
     public bool NextAlarmOverlayShowShadowText = true;
     public Vector4 NextAlarmOverlayTextColor = new(1f, 1f, 1f, 1f);

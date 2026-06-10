@@ -54,6 +54,7 @@ It helps you track different timezones, create alarms, compare times, customize 
       <p>Create alarms with custom messages, sounds, repeat options, snooze support and visible alarm notifications.</p>
       <p>
         <img src="https://img.shields.io/badge/Maintenance%20Reminder-✔-gold?style=flat-square" />
+        <img src="https://img.shields.io/badge/Events%20Reminder-✔-gold?style=flat-square" />
         <img src="https://img.shields.io/badge/Repeat%20Option-✔-gold?style=flat-square" />
         <img src="https://img.shields.io/badge/Snooze-✔-gold?style=flat-square" />
         <img src="https://img.shields.io/badge/Multiple%20Timezones-✔-gold?style=flat-square" />

@@ -8,6 +8,7 @@ using Clock.Services;
 
 namespace Clock.Windows;
 
+// Simple hover popup window for converted times.
 public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
 {
     private readonly Configuration configuration;
@@ -54,7 +55,7 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
         openedAt = DateTime.UtcNow;
         closeAt = openedAt.AddSeconds(Math.Clamp(configuration.ChatTimeHoverTooltipDurationSeconds, 2f, 5f));
 
-        // Keep the hover window near the click but as its own overlay so it does not steal layout space from chat or the config window.
+        // Keep the hover window near the click but as its own overlay so it doesn't steal layout space from chat or the config window.
         Position = ImGui.GetMousePos() + new Vector2(14f, 14f);
         PositionCondition = ImGuiCond.Always;
         IsOpen = true;
@@ -110,6 +111,8 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
         return Math.Clamp(width, 120f, 460f);
     }
 
+    // The setup button is drawn manually because the hover popup width is dynamic
+    // and the label needs to stay visually centered in a compact chat tooltip.
     private bool DrawSetupButton(float width)
     {
         var label = t("Create Alarm");
@@ -140,6 +143,7 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
 
         return hovered && (ImGui.IsMouseClicked(ImGuiMouseButton.Left) || ImGui.IsMouseReleased(ImGuiMouseButton.Left));
     }
+    // Draw paths are intentionally explicit; tiny UI changes are easier to spot this way.
 
     public override void Draw()
     {
@@ -170,6 +174,7 @@ public sealed class ChatTimeHoverPopupWindow : Window, IDisposable
             DrawFadeSeparator();
             if (DrawSetupButton(popupWidth))
             {
+                // The plugin callback handles the actual alarm creation and opens /alarms, this popup is kept focused only on hover UI state.
                 setupAlarmFromChat(new ChatTimeHoverService.ChatAlarmSetupRequest(match.TargetLocal, match.TargetTimeZoneId));
                 IsOpen = false;
                 return;

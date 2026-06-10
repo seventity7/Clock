@@ -2,8 +2,12 @@ using System;
 using System.IO;
 using System.Text.Json;
 
+// File helpers for config import/export. Kept small so failures are easier to reason about.
+
+
 namespace Clock;
 
+// Reads and writes external configuration copies.
 public static class ConfigurationFileService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()

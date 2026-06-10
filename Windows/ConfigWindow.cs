@@ -9,7 +9,11 @@ using Dalamud.Game.ClientState.Keys;
 using Dalamud.Interface;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Windowing;
+using Dalamud.Interface.Utility.Raii;
 using Clock.Services;
+
+// Sections are grouped by how users see them.
+
 
 namespace Clock.Windows;
 
@@ -21,7 +25,8 @@ public class ConfigWindow : Window, IDisposable
         Alarms,
         Appearance,
         AppearanceBottom,
-        AppearanceLocalTimeLayout
+        AppearanceLocalTimeLayout,
+        AppearanceAlarmOverlay
     }
 
 
@@ -30,6 +35,20 @@ public class ConfigWindow : Window, IDisposable
         public int From;
         public int To;
         public double StartedAt;
+    }
+
+    private sealed class AlarmZoneOption
+    {
+        public AlarmZoneOption(string id, string label, string shortText)
+        {
+            Id = id;
+            Label = label;
+            ShortText = shortText;
+        }
+
+        public string Id { get; }
+        public string Label { get; }
+        public string ShortText { get; }
     }
 
     private const string HelpUrl = "https://github.com/seventity7/clock";
@@ -48,22 +67,29 @@ public class ConfigWindow : Window, IDisposable
     private Guid? editingAlarmId;
     private string? editingAlarmTimeZoneId;
     private readonly FileDialogManager fileDialogManager = new();
-    private readonly Dictionary<string, List<ClockProfile>> appearanceUndoStacks = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, ClockProfile> colorEditUndoStart = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, ClockProfile> sliderEditUndoStart = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, AlarmWheelAnimation> alarmWheelAnimations = new(StringComparer.Ordinal);
-    private readonly HashSet<Guid> alarmPanelSelectedAlarmIds = new();
+    private readonly Dictionary<string, List<ClockProfile>> undoStacks = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ClockProfile> colorUndo = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ClockProfile> sliderUndo = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, AlarmWheelAnimation> alarmWheels = new(StringComparer.Ordinal);
+    private readonly HashSet<Guid> selectedAlarmIds = new();
+    // The display text is cached here because opening the alarm timezone page should be a pure UI operation, not a fresh pass over every system timezone.
+    private readonly IReadOnlyList<AlarmZoneOption> alarmZoneOptions = TimeZoneHelper.GetSystemTimeZones()
+        .Select(zone => new AlarmZoneOption(zone.Id, TimeZoneHelper.GetComboLabel(zone), TimeZoneHelper.ToShortText(zone.Id)))
+        .ToArray();
+    private readonly List<AlarmZoneOption> alarmZoneFilteredOptions = new();
+    private string alarmZoneFilteredText = "\uFFFF";
     private static readonly Vector4 GoldTextColor = new(1f, 0.82f, 0.42f, 1f);
     private const float AppearanceSliderWidth = 96f;
     private const float LocalAppearanceSliderWidth = 86f;
     private string timeZoneFilter = "";
-    private string chatTimestampTimeZoneFilter = "";
-    private string chatTimeHoverTimeZoneFilter = "";
-    private string countryTimeZoneFilter = "";
+    private string stampZoneFilter = "";
+    private string hoverZoneFilter = "";
+    private string countryZoneFilter = "";
+    private string alarmZoneFilter = "";
     private CountryTimeZoneOption? selectedCountryTimeZone;
-    private bool favoriteTimezonesExpanded = true;
-    private string configurationPopupMessage = "";
-    private bool openConfigurationPopupNextFrame;
+    private bool favZonesOpen = true;
+    private string popupMsg = "";
+    private bool openPopupNext;
     private string languageFilter = "";
     private bool chatAlarmSetupPending;
     private bool chatTimeHoverConfirmVisible;
@@ -91,9 +117,9 @@ public class ConfigWindow : Window, IDisposable
     private bool clockWindowOpenTracked;
     private bool openAlarmIntroPopupNextFrame;
     private bool alarmIntroPopupVisible;
-    private bool capturingAlarmsWindowKeybind;
-    private readonly List<VirtualKey> pendingAlarmsWindowKeybind = new();
-    private int alarmsWindowKeybindCaptureDelayFrames;
+    private bool capturingAlarmHotkey;
+    private readonly List<VirtualKey> pendingAlarmHotkey = new();
+    private int alarmHotkeyDelay;
 
     public ConfigWindow(Plugin plugin)
         : base("###ConfigWindow")
@@ -122,6 +148,7 @@ public class ConfigWindow : Window, IDisposable
 
     public void Dispose() { }
 
+    // Normal /alarms openings clear any temporary chat-conversion context so manual edits use the user's configured primary timezone again.
     public void OpenToAlarmsTab()
     {
         // Clear the chat-created alarm context when leaving this flow so normal alarm editing falls back to the primary timezone.
@@ -132,13 +159,21 @@ public class ConfigWindow : Window, IDisposable
         IsOpen = true;
     }
 
+    public void OpenToAlarmOverlayAppearance()
+    {
+        requestedTab = ConfigTabRequest.AppearanceAlarmOverlay;
+        IsOpen = true;
+    }
+
+    // This path only pre-fills the editor for legacy/manual review flows; the direct chat tooltip path below creates the alarm immediately.
     public void OpenToAlarmsTabFromChat(DateTime targetLocal, string targetTimeZoneId)
     {
         editingAlarmId = null;
         // When opened from chat conversion, the alarm editor temporarily uses the conversion target timezone instead of the primary timezone.
         editingAlarmTimeZoneId = string.IsNullOrWhiteSpace(targetTimeZoneId) ? configuration.SelectedTimeZoneId : targetTimeZoneId;
+        configuration.AlarmEditorTimeZoneId = editingAlarmTimeZoneId;
 
-        // Chat-created alarms carry a full date. Keep it as an override so the day picker does not silently snap back to the current month.
+        // Chat-created alarms carry a full date. Keep it as an override so the day picker doesn't silently snap back to the current month.
         configuration.AlarmEditorDay = targetLocal.Day;
         configuration.AlarmEditorDateOverrideText = targetLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         configuration.AlarmEditorMinute = targetLocal.Minute;
@@ -161,9 +196,50 @@ public class ConfigWindow : Window, IDisposable
         configuration.Save();
     }
 
+    // Direct chat-created alarms use the conversion timezone and a fixed message
+    // so users can later recognize which alarms came from chat hover conversion.
+    public bool CreateAlarmFromChatConversion(DateTime targetLocal, string targetTimeZoneId)
+    {
+        editingAlarmId = null;
+        editingAlarmTimeZoneId = string.IsNullOrWhiteSpace(targetTimeZoneId) ? configuration.SelectedTimeZoneId : targetTimeZoneId;
+        configuration.AlarmEditorTimeZoneId = editingAlarmTimeZoneId;
+
+        configuration.AlarmEditorDay = targetLocal.Day;
+        configuration.AlarmEditorDateOverrideText = targetLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        configuration.AlarmEditorMinute = targetLocal.Minute;
+        configuration.AlarmEditorMessage = "Created from chat conversion";
+        configuration.AlarmEditorSnoozeEnabled = false;
+        configuration.AlarmEditorSnoozeMinutes = 5;
+        configuration.AlarmEditorRepeatMode = AlarmRepeatMode.None;
+        configuration.AlarmEditorTimeZoneId = configuration.SelectedTimeZoneId;
+
+        if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
+        {
+            configuration.AlarmEditorIsPm = targetLocal.Hour >= 12;
+            var hour12 = targetLocal.Hour % 12;
+            configuration.AlarmEditorHour = hour12 == 0 ? 12 : hour12;
+        }
+        else
+        {
+            configuration.AlarmEditorHour = Math.Clamp(targetLocal.Hour, 0, 23);
+        }
+
+        if (IsAlarmEditorInPast(editingAlarmTimeZoneId))
+            return false;
+
+        AlarmConfigurationService.AddFromEditor(configuration, editingAlarmTimeZoneId);
+        ResetAlarmEditorQuickOptions();
+        chatAlarmSetupPending = false;
+        editingAlarmTimeZoneId = null;
+        alarmPanelPage = 0;
+        configuration.Save();
+        return true;
+    }
+
     public override void PreDraw()
     {
     }
+    // Draw paths are intentionally explicit; tiny UI changes are easier to spot this way.
 
     public override void Draw()
     {
@@ -177,57 +253,102 @@ public class ConfigWindow : Window, IDisposable
 
         DrawProfileHeader();
 
-        if (ImGui.BeginTabBar("ClockTabs"))
+        using (var tabs = ImRaii.TabBar("ClockTabs"))
         {
-            if (ImGui.BeginTabItem(T("General")))
+            if (tabs)
             {
-                if (BeginTabContent("##ClockGeneralTabContent"))
-                    DrawGeneralTab();
-                ImGui.EndChild();
-                ImGui.EndTabItem();
+                using (var tab = ImRaii.TabItem(T("General")))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockGeneralTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawGeneralTab();
+                        }
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem(T("Reminders")))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockRemindersTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawRemindersTab();
+                        }
+                    }
+                }
+
+                var appearanceTabFlags = requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout or ConfigTabRequest.AppearanceAlarmOverlay
+                    ? ImGuiTabItemFlags.SetSelected
+                    : ImGuiTabItemFlags.None;
+
+                using (var tab = ImRaii.TabItem(T("Appearance"), appearanceTabFlags))
+                {
+                    if (tab)
+                    {
+                        var appearanceJump = requestedTab;
+                        if (requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout or ConfigTabRequest.AppearanceAlarmOverlay)
+                            requestedTab = ConfigTabRequest.None;
+
+                        using (var tabContent = ImRaii.Child("##ClockAppearanceTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawAppearanceTab(appearanceJump);
+                        }
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem(T("Extras")))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockExtrasTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawExtrasTab();
+                        }
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem(T("Profiles")))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockProfilesTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawProfilesTab();
+                        }
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem(T("Commands")))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockCommandsTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawCommandsTab();
+                        }
+                    }
+                }
+
+                using (var tab = ImRaii.TabItem(T("Backup"), ImGuiTabItemFlags.Trailing))
+                {
+                    if (tab)
+                    {
+                        using (var tabContent = ImRaii.Child("##ClockBackupTabContent", Vector2.Zero, false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+                        {
+                            if (tabContent)
+                                DrawPluginConfigTab();
+                        }
+                    }
+                }
             }
-
-            if (ImGui.BeginTabItem(T("Profiles")))
-            {
-                if (BeginTabContent("##ClockProfilesTabContent"))
-                    DrawProfilesTab();
-                ImGui.EndChild();
-                ImGui.EndTabItem();
-            }
-
-            var appearanceTabFlags = requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout
-                ? ImGuiTabItemFlags.SetSelected
-                : ImGuiTabItemFlags.None;
-
-            if (ImGui.BeginTabItem(T("Appearance"), appearanceTabFlags))
-            {
-                var appearanceJump = requestedTab;
-                if (requestedTab is ConfigTabRequest.Appearance or ConfigTabRequest.AppearanceBottom or ConfigTabRequest.AppearanceLocalTimeLayout)
-                    requestedTab = ConfigTabRequest.None;
-
-                if (BeginTabContent("##ClockAppearanceTabContent"))
-                    DrawAppearanceTab(appearanceJump);
-                ImGui.EndChild();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem(T("Commands")))
-            {
-                if (BeginTabContent("##ClockCommandsTabContent"))
-                    DrawCommandsTab();
-                ImGui.EndChild();
-                ImGui.EndTabItem();
-            }
-
-            if (ImGui.BeginTabItem(T("Plugin Config"), ImGuiTabItemFlags.Trailing))
-            {
-                if (BeginTabContent("##ClockPluginConfigTabContent"))
-                    DrawPluginConfigTab();
-                ImGui.EndChild();
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
         }
 
         DrawConfigurationResultPopup();
@@ -281,7 +402,7 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (hovered)
-            ImGui.SetTooltip(T("Open Alarms"));
+            DrawTooltip(T("Open Alarms"));
 
         if (ImGui.IsItemClicked())
             plugin.OpenAlarmOverlay();
@@ -325,8 +446,10 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SetNextWindowSize(popupSize, ImGuiCond.Appearing);
         ImGui.SetNextWindowPos(windowPos + (windowSize - popupSize) * 0.5f, ImGuiCond.Appearing);
 
-        if (ImGui.BeginPopupModal(popupId, ref popupOpen, ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings))
+        using (var popup = ImRaii.PopupModal(popupId, ref popupOpen, ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings))
         {
+            if (popup)
+            {
             if (!configuration.ClockAlarmsTopButtonIntroSeen)
             {
                 configuration.ClockAlarmsTopButtonIntroSeen = true;
@@ -351,22 +474,13 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.CloseCurrentPopup();
             }
 
-            ImGui.EndPopup();
+            }
         }
 
         if (!popupOpen)
             alarmIntroPopupVisible = false;
     }
 
-    private bool BeginTabContent(string id, bool noMouseScroll = false)
-    {
-        ImGui.Spacing();
-        var flags = ImGuiWindowFlags.AlwaysVerticalScrollbar;
-        if (noMouseScroll)
-            flags |= ImGuiWindowFlags.NoScrollWithMouse;
-
-        return ImGui.BeginChild(id, Vector2.Zero, false, flags);
-    }
 
 
 
@@ -391,7 +505,7 @@ public class ConfigWindow : Window, IDisposable
             ImGui.OpenPopup("ClockLanguagePopup");
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Select language"));
+            DrawTooltip(T("Select language"));
 
         DrawLanguagePopup();
 
@@ -424,11 +538,12 @@ public class ConfigWindow : Window, IDisposable
         var hoveredColor = new Vector4(0.76f, 0.55f, 1f, 1f);
         var iconColor = ImGui.GetStyle().Colors[(int)ImGuiCol.Text];
 
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, hoveredColor);
-        if (ImGui.Button("##ClockFeedbackPluginInstaller", size))
-            // Just open Dalamud's installed-plugin page directly.
-            plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.InstalledPlugins, "Clock");
-        ImGui.PopStyleColor();
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, hoveredColor))
+        {
+            if (ImGui.Button("##ClockFeedbackPluginInstaller", size))
+                // Just open Dalamud's installed-plugin page directly.
+                plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.InstalledPlugins, "Clock");
+        }
 
         using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
         {
@@ -438,15 +553,16 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Send Feedback/Report issues"));
+            DrawTooltip(T("Send Feedback/Report issues"));
     }
 
     private void DrawLanguagePopup()
     {
         const string popupId = "ClockLanguagePopup";
-        if (!ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
-            return;
-
+        using (var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse))
+        {
+            if (popup)
+            {
         ImGui.SetNextItemWidth(280f);
         ImGui.InputText("##ClockLanguageFilter", ref languageFilter, 96);
         if (string.IsNullOrWhiteSpace(languageFilter) && !ImGui.IsItemActive())
@@ -457,30 +573,40 @@ public class ConfigWindow : Window, IDisposable
 
         DrawFadeSeparator();
 
-        if (ImGui.BeginChild("##ClockLanguageScrollableList", new Vector2(320f, 260f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+        using (var languageList = ImRaii.Child("##ClockLanguageScrollableList", new Vector2(320f, 260f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
         {
-            foreach (var option in ClockLocalizationService.GetLanguageOptions())
+            if (languageList)
             {
-                if (!ClockLocalizationService.MatchesFilter(option, languageFilter))
-                    continue;
-
-                var selected = string.Equals(configuration.UiLanguageCultureName, option.CultureName, StringComparison.OrdinalIgnoreCase);
-                if (ImGui.Selectable(option.DisplayName, selected))
+                foreach (var option in ClockLocalizationService.GetLanguageOptions())
                 {
-                    configuration.UiLanguageCultureName = option.CultureName;
-                    configuration.Save();
-                    languageFilter = "";
-                    ImGui.CloseCurrentPopup();
-                }
+                    if (!ClockLocalizationService.MatchesFilter(option, languageFilter))
+                        continue;
 
-                if (selected)
-                    ImGui.SetItemDefaultFocus();
+                    var selected = string.Equals(configuration.UiLanguageCultureName, option.CultureName, StringComparison.OrdinalIgnoreCase);
+                    if (ImGui.Selectable(option.DisplayName, selected))
+                    {
+                        configuration.UiLanguageCultureName = option.CultureName;
+                        configuration.Save();
+                        languageFilter = "";
+                        ImGui.CloseCurrentPopup();
+                    }
+
+                    if (selected)
+                        ImGui.SetItemDefaultFocus();
+                }
             }
         }
-        ImGui.EndChild();
-        ImGui.EndPopup();
+            }
+        }
     }
 
+
+    // Tooltips now go through ImRaii and every popup scope is closed by disposal
+    private static void DrawTooltip(string text)
+    {
+        using (ImRaii.Tooltip())
+            ImGui.TextUnformatted(text);
+    }
 
     private string T(string text)
     {
@@ -508,8 +634,10 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.SetNextItemWidth(126f);
 
-        if (ImGui.BeginCombo("##ActiveProfileCombo", $"{T("Profile")}: {configuration.GetActiveProfile().Name}"))
+        using (var combo = ImRaii.Combo("##ActiveProfileCombo", $"{T("Profile")}: {configuration.GetActiveProfile().Name}"))
         {
+            if (combo)
+            {
             var profileIndices = Enumerable.Range(0, configuration.Profiles.Count)
                 .Where(i => IsUserProfile(configuration.Profiles[i].Name))
                 .ToList();
@@ -535,7 +663,7 @@ public class ConfigWindow : Window, IDisposable
                 }
             }
 
-            ImGui.EndCombo();
+            }
         }
 
         DrawProfileHeaderLayoutMode(configuration.GetActiveProfile());
@@ -615,12 +743,22 @@ public class ConfigWindow : Window, IDisposable
             DrawFavoriteTimezonesSection();
         }, DrawTimeDisplayHeaderRight);
 
+    }
+
+
+    private void DrawRemindersTab()
+    {
+        DrawSeasonalEventsSection();
+        DrawMaintenanceRemindersSection();
+    }
+
+
+    private void DrawExtrasTab()
+    {
         Section(T("Chat Timestamp"), () =>
         {
             DrawChatTimestampSettings();
-        }, DrawChatTimestampHeaderRight);
-
-        DrawMaintenanceRemindersSection();
+        }, DrawChatTimestampHeaderRight, false);
 
         Section(T("Chat Time Conversion"), () =>
         {
@@ -629,9 +767,184 @@ public class ConfigWindow : Window, IDisposable
     }
 
 
+    private void DrawSeasonalEventsSection()
+    {
+        Section(T("Seasonal Events"), () =>
+        {
+            var enabled = configuration.EventReminderEnabled;
+            if (Checkbox(T("Enable Reminder"), ref enabled))
+            {
+                configuration.EventReminderEnabled = enabled;
+                configuration.Save();
+            }
+
+            ImGui.SameLine(0f, 18f);
+            var createAlarmsHovered = false;
+            using (ImRaii.Disabled(!configuration.EventReminderEnabled))
+            {
+                var createAlarms = configuration.EventCreateAlarms;
+                if (Checkbox(T("Create Alarms"), ref createAlarms))
+                {
+                    configuration.EventCreateAlarms = createAlarms;
+                    configuration.Save();
+                }
+
+                createAlarmsHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+                ImGui.SameLine(0f, 6f);
+                DrawEventAlarmRecreateButton();
+            }
+
+            if (createAlarmsHovered)
+            {
+                using (ImRaii.Tooltip())
+                    ImGui.TextUnformatted(T("Alarm 1 day before the event using your\nconfigured Primary Timezone."));
+            }
+
+            if (!configuration.EventReminderEnabled)
+                return;
+
+            var onLogin = configuration.EventNotifyOnLogin;
+            if (Checkbox(T("On Login"), ref onLogin))
+            {
+                configuration.EventNotifyOnLogin = onLogin;
+                configuration.Save();
+            }
+
+            var oneDay = configuration.EventNotifyOneDayBeforeEnd;
+            if (Checkbox(T("1 Day before Ending"), ref oneDay))
+            {
+                configuration.EventNotifyOneDayBeforeEnd = oneDay;
+                configuration.Save();
+            }
+
+            var oneWeek = configuration.EventNotifyOneWeekBeforeEnd;
+            if (Checkbox(T("1 Week before Ending"), ref oneWeek))
+            {
+                configuration.EventNotifyOneWeekBeforeEnd = oneWeek;
+                configuration.Save();
+            }
+
+            var everyday = configuration.EventNotifyEveryday;
+            if (Checkbox(T("Everyday"), ref everyday))
+            {
+                configuration.EventNotifyEveryday = everyday;
+                configuration.Save();
+            }
+
+            ImGui.Spacing();
+            var checkingHovered = false;
+            var eventCheckLabel = plugin.IsEventCheckRunning
+                ? T("Checking...")
+                : plugin.IsEventCheckQueued
+                    ? T("Queued...")
+                    : T("Check Now");
+            using (ImRaii.Disabled(plugin.IsEventCheckRunning || plugin.IsEventCheckQueued))
+            {
+                if (ImGui.Button(eventCheckLabel) && !plugin.RequestEventCheck(true))
+                {
+                    configuration.LastEventCheckStatus = T("Seasonal event check is already running.");
+                    configuration.Save();
+                }
+
+                checkingHovered = (plugin.IsEventCheckRunning || plugin.IsEventCheckQueued) && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+            }
+
+            if (checkingHovered)
+            {
+                using (ImRaii.Tooltip())
+                    ImGui.TextUnformatted(T("Please wait.."));
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button(T("Test Notification")))
+                plugin.TestEventNotice();
+
+            if (!string.IsNullOrWhiteSpace(configuration.LastEventCheckStatus))
+                ImGui.TextWrapped(T(configuration.LastEventCheckStatus));
+
+            ImGui.Spacing();
+            ImGui.TextColored(GoldTextColor, T("Current seasonal events:"));
+
+            if (configuration.Events.Count == 0)
+            {
+                ImGui.TextWrapped(T("No active seasonal events found yet."));
+            }
+            else
+            {
+                foreach (var ev in configuration.Events.OrderBy(e => e.EndUtc))
+                    ImGui.TextWrapped(plugin.FormatEventSummary(ev));
+            }
+
+            if (configuration.LastEventCheckUtc > DateTime.MinValue)
+            {
+                ImGui.Spacing();
+                ImGui.TextDisabled(string.Format(T("Last check: {0}"), configuration.LastEventCheckUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)));
+            }
+        }, DrawEventTitleRight, false);
+    }
+
+
+    private void DrawEventAlarmRecreateButton()
+    {
+        var icon = FontAwesomeIcon.Redo.ToIconString();
+        var hovered = false;
+        var clicked = false;
+        var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            var font = ImGui.GetFont();
+            var fontSize = ImGui.GetFontSize() * 0.82f;
+            var size = ImGui.CalcTextSize(icon) * 0.82f;
+            var buttonSize = size + new Vector2(4f, 2f);
+            var cursor = ImGui.GetCursorPos();
+            ImGui.SetCursorPosY(cursor.Y + MathF.Max(0f, (ImGui.GetFrameHeight() - buttonSize.Y) * 0.5f));
+            // This draws a small icon-only button so the "Create Alarms" row doesn't look like a second full action.
+            clicked = ImGui.InvisibleButton("##RecreateSeasonalEventAlarm", buttonSize);
+            hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+            var min = ImGui.GetItemRectMin();
+            var rectSize = ImGui.GetItemRectSize();
+            var pos = new Vector2(min.X + 2f, min.Y + MathF.Floor((rectSize.Y - size.Y) * 0.5f) + 1f);
+            ImGui.GetWindowDrawList().AddText(font, fontSize, pos, ImGui.GetColorU32(hovered ? GoldTextColor : disabledColor), icon);
+        }
+
+        if (hovered)
+        {
+            using (ImRaii.Tooltip())
+                ImGui.TextUnformatted(T("Recreate Alarm"));
+        }
+
+        if (clicked && plugin.RecreateEventAlarms())
+            plugin.OpenAlarmOverlay();
+    }
+
+    private void DrawEventTitleRight()
+    {
+        var width = ImGui.GetContentRegionAvail().X;
+        var hovered = false;
+
+        using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+        {
+            var icon = FontAwesomeIcon.QuestionCircle.ToIconString();
+            var size = ImGui.CalcTextSize(icon);
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0f, width - size.X - 2f));
+            ImGui.InvisibleButton("##EventTitleInfo", size + new Vector2(4f, 2f));
+            hovered = ImGui.IsItemHovered();
+            var min = ImGui.GetItemRectMin();
+            var pos = new Vector2(min.X + 2f, min.Y + 1f);
+            ImGui.GetWindowDrawList().AddText(pos, ImGui.GetColorU32(hovered ? GoldTextColor : ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled]), icon);
+        }
+
+        if (hovered)
+        {
+            using (ImRaii.Tooltip())
+                ImGui.TextUnformatted(T("Isn't recommended to use this if you already use it in another plugin\nwith same/similar feature"));
+        }
+    }
+
     private void DrawMaintenanceRemindersSection()
     {
-        Section(T("Maintenance Reminders"), () =>
+        Section(T("Maintenance"), () =>
         {
             bool enabled = configuration.MaintenanceReminderEnabled;
             if (Checkbox(T("Enable Maintenance Reminders"), ref enabled))
@@ -663,16 +976,19 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
-            ImGui.BeginDisabled(plugin.IsMaintenanceRefreshRunning);
-            if (ImGui.Button(plugin.IsMaintenanceRefreshRunning ? T("Checking...") : T("Check Now")))
+            var maintenanceCheckLabel = plugin.IsMaintenanceRefreshRunning
+                ? T("Checking...")
+                : plugin.IsMaintenanceCheckQueued
+                    ? T("Queued...")
+                    : T("Check Now");
+            using (ImRaii.Disabled(plugin.IsMaintenanceRefreshRunning || plugin.IsMaintenanceCheckQueued))
             {
-                if (!plugin.RequestMaintenanceRefresh(true))
+                if (ImGui.Button(maintenanceCheckLabel) && !plugin.RequestMaintenanceRefresh(true))
                 {
-                    configuration.LastMaintenanceCheckStatus = "Maintenance check is already running.";
+                    configuration.LastMaintenanceCheckStatus = T("Maintenance check is already running.");
                     configuration.Save();
                 }
             }
-            ImGui.EndDisabled();
 
             if (!string.IsNullOrWhiteSpace(configuration.LastMaintenanceCheckStatus))
                 ImGui.TextWrapped(T(configuration.LastMaintenanceCheckStatus));
@@ -728,21 +1044,21 @@ public class ConfigWindow : Window, IDisposable
 
     private void DrawAlarmsWindowKeybindSetting()
     {
-        if (capturingAlarmsWindowKeybind)
+        if (capturingAlarmHotkey)
         {
             if (CaptureAlarmsWindowKeybind())
             {
-                configuration.AlarmsWindowHotkey = NormalizeAlarmsWindowKeybind(pendingAlarmsWindowKeybind);
-                capturingAlarmsWindowKeybind = false;
-                pendingAlarmsWindowKeybind.Clear();
-                alarmsWindowKeybindCaptureDelayFrames = 0;
+                configuration.AlarmsWindowHotkey = NormalizeAlarmsWindowKeybind(pendingAlarmHotkey);
+                capturingAlarmHotkey = false;
+                pendingAlarmHotkey.Clear();
+                alarmHotkeyDelay = 0;
                 ClearPressedAlarmKeybindKeys();
                 configuration.Save();
             }
         }
 
-        var keybindText = capturingAlarmsWindowKeybind
-            ? pendingAlarmsWindowKeybind.Count == 0 ? T("Press keys...") : string.Join("+", pendingAlarmsWindowKeybind.Select(Plugin.FormatVirtualKey))
+        var keybindText = capturingAlarmHotkey
+            ? pendingAlarmHotkey.Count == 0 ? T("Press keys...") : string.Join("+", pendingAlarmHotkey.Select(Plugin.FormatVirtualKey))
             : plugin.FormatAlarmsWindowKeybind();
 
         var buttonWidth = Math.Clamp(ImGui.CalcTextSize(keybindText).X + 18f, 76f, 140f);
@@ -758,9 +1074,9 @@ public class ConfigWindow : Window, IDisposable
             if (ImGui.SmallButton($"{T("Clear")}##ClearAlarmsWindowKeybind"))
             {
                 configuration.AlarmsWindowHotkey = [];
-                capturingAlarmsWindowKeybind = false;
-                pendingAlarmsWindowKeybind.Clear();
-                alarmsWindowKeybindCaptureDelayFrames = 0;
+                capturingAlarmHotkey = false;
+                pendingAlarmHotkey.Clear();
+                alarmHotkeyDelay = 0;
                 configuration.Save();
             }
         }
@@ -770,21 +1086,21 @@ public class ConfigWindow : Window, IDisposable
 
     private void BeginAlarmsWindowKeybindCapture()
     {
-        capturingAlarmsWindowKeybind = true;
-        alarmsWindowKeybindCaptureDelayFrames = 1;
-        pendingAlarmsWindowKeybind.Clear();
+        capturingAlarmHotkey = true;
+        alarmHotkeyDelay = 1;
+        pendingAlarmHotkey.Clear();
         ClearPressedAlarmKeybindKeys();
     }
 
     private bool CaptureAlarmsWindowKeybind()
     {
-        if (!capturingAlarmsWindowKeybind)
+        if (!capturingAlarmHotkey)
             return false;
 
-        if (alarmsWindowKeybindCaptureDelayFrames > 0)
+        if (alarmHotkeyDelay > 0)
         {
             ClearPressedAlarmKeybindKeys();
-            alarmsWindowKeybindCaptureDelayFrames--;
+            alarmHotkeyDelay--;
             return false;
         }
 
@@ -800,17 +1116,17 @@ public class ConfigWindow : Window, IDisposable
 
             if (key == VirtualKey.ESCAPE)
             {
-                capturingAlarmsWindowKeybind = false;
-                pendingAlarmsWindowKeybind.Clear();
-                alarmsWindowKeybindCaptureDelayFrames = 0;
+                capturingAlarmHotkey = false;
+                pendingAlarmHotkey.Clear();
+                alarmHotkeyDelay = 0;
                 return false;
             }
 
-            if (!pendingAlarmsWindowKeybind.Contains(key))
-                pendingAlarmsWindowKeybind.Add(key);
+            if (!pendingAlarmHotkey.Contains(key))
+                pendingAlarmHotkey.Add(key);
         }
 
-        return pendingAlarmsWindowKeybind.Any(key => !IsModifierKey(key));
+        return pendingAlarmHotkey.Any(key => !IsModifierKey(key));
     }
 
     private void ClearPressedAlarmKeybindKeys()
@@ -888,7 +1204,7 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (hovered)
-            ImGui.SetTooltip(T("Run preview"));
+            DrawTooltip(T("Run preview"));
 
         if (clicked)
             plugin.RunAlarmAnimationPreview();
@@ -906,15 +1222,14 @@ public class ConfigWindow : Window, IDisposable
             // This label is intentionally visible near the section title because chat hover conversion touches live chat rendering.
             // The tooltip is here to set expectations before users enable it: it is opt-in, safe to try but may conflict with other chat plugins or have bugs.
             ImGui.GetWindowDrawList().AddText(ImGui.GetItemRectMin(), ImGui.GetColorU32(red), label);
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted(T("This feature is completely experimental, it might or might not work well.\nIt will not break your game if you enable it but use it at your own risk.\nPlugin incompatibilities are expected to happen.\nPlease report any issues through the Dalamud Feedback button."));
-            ImGui.EndTooltip();
+            using (ImRaii.Tooltip())
+                ImGui.TextUnformatted(T("This feature is completely experimental, it might or might not work well.\nIt will not break your game if you enable it but use it at your own risk.\nPlugin incompatibilities are expected to happen.\nPlease report any issues through the Dalamud Feedback button."));
         }
     }
 
     private void DrawChatTimestampHeaderRight()
     {
-        var infoIcon = FontAwesomeIcon.Question.ToIconString();
+        var infoIcon = FontAwesomeIcon.QuestionCircle.ToIconString();
         var startX = ImGui.GetCursorPosX();
         var contentMaxX = ImGui.GetContentRegionMax().X;
         bool hovered;
@@ -934,9 +1249,8 @@ public class ConfigWindow : Window, IDisposable
 
         if (hovered)
         {
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted(T("Recommend to turn off any similar feature from other plugins to avoid any issues."));
-            ImGui.EndTooltip();
+            using (ImRaii.Tooltip())
+                ImGui.TextUnformatted(T("Recommend to turn off any similar feature from other plugins to avoid any issues."));
         }
     }
 
@@ -959,10 +1273,12 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (hovered)
-            ImGui.SetTooltip(T("Appearance Settings"));
+            DrawTooltip(T("Appearance Settings"));
     }
 
 
+    // Chat time conversion has its own settings block because it touches live chat rendering and alarm creation,
+    // both of which need clear opt-in controls.
     private void DrawChatTimeHoverSettings()
     {
         bool enabled = configuration.ChatTimeHoverEnabled;
@@ -987,10 +1303,11 @@ public class ConfigWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(!configuration.ChatTimeHoverEnabled);
-        if (ImGui.Button(T("Test")))
-            plugin.PrintChatTimeHoverTestMessage();
-        ImGui.EndDisabled();
+        using (ImRaii.Disabled(!configuration.ChatTimeHoverEnabled))
+        {
+            if (ImGui.Button(T("Test")))
+                plugin.PrintChatTimeHoverTestMessage();
+        }
 
         Help(T("Converts chat times on hover."));
 
@@ -1004,37 +1321,34 @@ public class ConfigWindow : Window, IDisposable
 
         // While the first-enable prompt is open, dependent controls stay locked so the user cannot use it.
         var hoverInputsLocked = chatTimeHoverConfirmVisible;
-        if (hoverInputsLocked)
-            ImGui.BeginDisabled();
-
-        var showAlarm = configuration.ChatTimeHoverShowAlarmSetupOption;
-        if (Checkbox(T("Show alarm setup option"), ref showAlarm))
+        using (ImRaii.Disabled(hoverInputsLocked))
         {
-            configuration.ChatTimeHoverShowAlarmSetupOption = showAlarm;
-            configuration.Save();
+            var showAlarm = configuration.ChatTimeHoverShowAlarmSetupOption;
+            if (Checkbox(T("Show alarm setup option"), ref showAlarm))
+            {
+                configuration.ChatTimeHoverShowAlarmSetupOption = showAlarm;
+                configuration.Save();
+            }
+
+            ImGui.SameLine();
+            // Make the user aware that chat-created alarms use the conversion target timezone, which can differ from the normal primary timezone.
+            DrawChatTimeHoverAlarmSetupInfoIcon();
+
+            Help(T("Shows alarm setup only for future times."));
+
+            DrawChatTimeHoverTimezoneCombo();
+            Help(T("Timezone used for chat time conversions."));
+
+            var tooltipDuration = configuration.ChatTimeHoverTooltipDurationSeconds;
+            ImGui.SetNextItemWidth(180f);
+            if (ImGui.SliderFloat(T("Tooltip duration"), ref tooltipDuration, 2f, 5f, "%.1fs"))
+            {
+                configuration.ChatTimeHoverTooltipDurationSeconds = tooltipDuration;
+                configuration.SanitizeChatTimestampOptions();
+                configuration.Save();
+            }
+            Help(T("How long the clicked conversion tooltip stays visible."));
         }
-
-        ImGui.SameLine();
-        // Make the user aware that chat-created alarms use the conversion target timezone, which can differ from the normal primary timezone.
-        DrawChatTimeHoverAlarmSetupInfoIcon();
-
-        Help(T("Shows alarm setup only for future times."));
-
-        DrawChatTimeHoverTimezoneCombo();
-        Help(T("Timezone used for chat time conversions."));
-
-        var tooltipDuration = configuration.ChatTimeHoverTooltipDurationSeconds;
-        ImGui.SetNextItemWidth(180f);
-        if (ImGui.SliderFloat(T("Tooltip duration"), ref tooltipDuration, 2f, 5f, "%.1fs"))
-        {
-            configuration.ChatTimeHoverTooltipDurationSeconds = tooltipDuration;
-            configuration.SanitizeChatTimestampOptions();
-            configuration.Save();
-        }
-        Help(T("How long the clicked conversion tooltip stays visible."));
-
-        if (hoverInputsLocked)
-            ImGui.EndDisabled();
 
         ImGui.Unindent();
         DrawChatTimeHoverFirstEnablePrompt();
@@ -1042,7 +1356,7 @@ public class ConfigWindow : Window, IDisposable
 
     private void DrawChatTimeHoverAlarmSetupInfoIcon()
     {
-        const string icon = "\uf128";
+        var icon = FontAwesomeIcon.QuestionCircle.ToIconString();
         var hovered = false;
         var enabled = configuration.ChatTimeHoverEnabled;
         var disabledColor = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
@@ -1058,9 +1372,8 @@ public class ConfigWindow : Window, IDisposable
 
         if (enabled && hovered)
         {
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted(T("When creating a alarm from the tooltip option,\nit will be set up for the timezone selected below"));
-            ImGui.EndTooltip();
+            using (ImRaii.Tooltip())
+                ImGui.TextUnformatted(T("When creating a alarm from the tooltip option,\nit will be set up for the timezone selected below"));
         }
     }
 
@@ -1074,46 +1387,49 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SetNextWindowPos(center, ImGuiCond.Appearing, new Vector2(0.5f, 0.5f));
         ImGui.SetNextWindowSize(new Vector2(410f, 0f), ImGuiCond.Appearing);
 
-        if (!ImGui.BeginPopupModal($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoSavedSettings))
+        using (var popup = ImRaii.PopupModal($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoSavedSettings))
         {
-            ImGui.OpenPopup($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm");
-            return;
+            if (popup)
+            {
+                var text = T("This feature is completely experimental. Plugin incompatibilities and bugs are expected to happen. This alert will not appear again once activated. Do you wish to activate this option?");
+                ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 380f);
+                ImGui.TextUnformatted(text);
+                ImGui.PopTextWrapPos();
+                ImGui.Spacing();
+                DrawFadeSeparator();
+                ImGui.Spacing();
+
+                var yesSize = new Vector2(86f, 24f);
+                var noSize = new Vector2(86f, 24f);
+                var gap = ImGui.GetStyle().ItemSpacing.X;
+                var width = ImGui.GetContentRegionAvail().X;
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0f, (width - yesSize.X - noSize.X - gap) * 0.5f));
+
+                if (ImGui.Button(T("Yes"), yesSize))
+                {
+                    configuration.ChatTimeHoverEnabled = true;
+                    configuration.ChatTimeHoverExperimentalWarningAccepted = true;
+                    chatTimeHoverConfirmVisible = false;
+                    configuration.SanitizeChatTimestampOptions();
+                    configuration.Save();
+                    ImGui.CloseCurrentPopup();
+                }
+
+                ImGui.SameLine();
+                if (ImGui.Button(T("No"), noSize))
+                {
+                    configuration.ChatTimeHoverEnabled = false;
+                    chatTimeHoverConfirmVisible = false;
+                    configuration.Save();
+                    ImGui.CloseCurrentPopup();
+                }
+            }
+            else
+            {
+                ImGui.OpenPopup($"{T("Experimental")}###ClockChatTimeHoverExperimentalConfirm");
+                return;
+            }
         }
-
-        var text = T("This feature is completely experimental. Plugin incompatibilities and bugs are expected to happen. This alert will not appear again once activated. Do you wish to activate this option?");
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 380f);
-        ImGui.TextUnformatted(text);
-        ImGui.PopTextWrapPos();
-        ImGui.Spacing();
-        DrawFadeSeparator();
-        ImGui.Spacing();
-
-        var yesSize = new Vector2(86f, 24f);
-        var noSize = new Vector2(86f, 24f);
-        var gap = ImGui.GetStyle().ItemSpacing.X;
-        var width = ImGui.GetContentRegionAvail().X;
-        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + Math.Max(0f, (width - yesSize.X - noSize.X - gap) * 0.5f));
-
-        if (ImGui.Button(T("Yes"), yesSize))
-        {
-            configuration.ChatTimeHoverEnabled = true;
-            configuration.ChatTimeHoverExperimentalWarningAccepted = true;
-            chatTimeHoverConfirmVisible = false;
-            configuration.SanitizeChatTimestampOptions();
-            configuration.Save();
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button(T("No"), noSize))
-        {
-            configuration.ChatTimeHoverEnabled = false;
-            chatTimeHoverConfirmVisible = false;
-            configuration.Save();
-            ImGui.CloseCurrentPopup();
-        }
-
-        ImGui.EndPopup();
     }
 
     private void DrawChatTimeHoverTimezoneCombo()
@@ -1133,23 +1449,25 @@ public class ConfigWindow : Window, IDisposable
         var buttonMin = ImGui.GetItemRectMin();
         var buttonMax = ImGui.GetItemRectMax();
         var typedTimeZoneId = string.Empty;
-        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(chatTimeHoverTimeZoneFilter)
-            && TimeZoneHelper.TryResolveTimeZone(chatTimeHoverTimeZoneFilter, out typedTimeZoneId);
+        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(hoverZoneFilter)
+            && TimeZoneHelper.TryResolveTimeZone(hoverZoneFilter, out typedTimeZoneId);
 
         ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 360f : 320f), ImGuiCond.Always);
 
-        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        using (var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
         {
+            if (popup)
+            {
             ImGui.SetNextItemWidth(-1f);
-            ImGui.InputText("##ChatTimeHoverTimezoneFilter", ref chatTimeHoverTimeZoneFilter, 96);
+            ImGui.InputText("##ChatTimeHoverTimezoneFilter", ref hoverZoneFilter, 96);
             DrawFadeSeparator();
 
             if (ImGui.Selectable(T("Primary Timezone"), string.IsNullOrWhiteSpace(configuration.ChatTimeHoverTimeZoneId)))
             {
                 configuration.ChatTimeHoverTimeZoneId = string.Empty;
                 configuration.Save();
-                chatTimeHoverTimeZoneFilter = "";
+                hoverZoneFilter = "";
                 ImGui.CloseCurrentPopup();
             }
 
@@ -1160,36 +1478,37 @@ public class ConfigWindow : Window, IDisposable
                 {
                     configuration.ChatTimeHoverTimeZoneId = typedTimeZoneId;
                     configuration.Save();
-                    chatTimeHoverTimeZoneFilter = "";
+                    hoverZoneFilter = "";
                     ImGui.CloseCurrentPopup();
                 }
 
                 DrawFadeSeparator();
             }
 
-            if (ImGui.BeginChild("##ChatTimeHoverTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            using (var timezoneList = ImRaii.Child("##ChatTimeHoverTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
             {
-                foreach (var timeZone in TimeZoneHelper.GetSystemTimeZones().OrderBy(timeZone => timeZone.BaseUtcOffset).ThenBy(timeZone => timeZone.Id, StringComparer.OrdinalIgnoreCase))
+                if (timezoneList)
                 {
-                    if (!TimeZoneHelper.MatchesFilter(timeZone, chatTimeHoverTimeZoneFilter))
-                        continue;
-
-                    bool selected = string.Equals(configuration.ChatTimeHoverTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
-                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    foreach (var timeZone in TimeZoneHelper.GetSystemTimeZones().OrderBy(timeZone => timeZone.BaseUtcOffset).ThenBy(timeZone => timeZone.Id, StringComparer.OrdinalIgnoreCase))
                     {
-                        configuration.ChatTimeHoverTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
-                        configuration.Save();
-                        chatTimeHoverTimeZoneFilter = "";
-                        ImGui.CloseCurrentPopup();
-                    }
+                        if (!TimeZoneHelper.MatchesFilter(timeZone, hoverZoneFilter))
+                            continue;
 
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
+                        bool selected = string.Equals(configuration.ChatTimeHoverTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                        if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                        {
+                            configuration.ChatTimeHoverTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                            configuration.Save();
+                            hoverZoneFilter = "";
+                            ImGui.CloseCurrentPopup();
+                        }
+
+                        if (selected)
+                            ImGui.SetItemDefaultFocus();
+                    }
                 }
             }
-
-            ImGui.EndChild();
-            ImGui.EndPopup();
+            }
         }
     }
 
@@ -1261,16 +1580,18 @@ public class ConfigWindow : Window, IDisposable
         var buttonMin = ImGui.GetItemRectMin();
         var buttonMax = ImGui.GetItemRectMax();
         var typedTimeZoneId = string.Empty;
-        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(chatTimestampTimeZoneFilter)
-            && TimeZoneHelper.TryResolveTimeZone(chatTimestampTimeZoneFilter, out typedTimeZoneId);
+        var hasTypedTimeZone = !string.IsNullOrWhiteSpace(stampZoneFilter)
+            && TimeZoneHelper.TryResolveTimeZone(stampZoneFilter, out typedTimeZoneId);
 
         ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 360f : 320f), ImGuiCond.Always);
 
-        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        using (var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
         {
+            if (popup)
+            {
             ImGui.SetNextItemWidth(-1f);
-            ImGui.InputText("##ChatTimestampTimezoneFilter", ref chatTimestampTimeZoneFilter, 96);
+            ImGui.InputText("##ChatTimestampTimezoneFilter", ref stampZoneFilter, 96);
             DrawFadeSeparator();
 
             bool localSelected = string.IsNullOrWhiteSpace(configuration.ChatTimestampTimeZoneId);
@@ -1279,7 +1600,7 @@ public class ConfigWindow : Window, IDisposable
                 configuration.ChatTimestampTimeZoneId = string.Empty;
                 configuration.Save();
                 plugin.RefreshChatTimestampSettings();
-                chatTimestampTimeZoneFilter = "";
+                stampZoneFilter = "";
                 ImGui.CloseCurrentPopup();
             }
 
@@ -1296,37 +1617,38 @@ public class ConfigWindow : Window, IDisposable
                     configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(typedTimeZoneId);
                     configuration.Save();
                     plugin.RefreshChatTimestampSettings();
-                    chatTimestampTimeZoneFilter = "";
+                    stampZoneFilter = "";
                     ImGui.CloseCurrentPopup();
                 }
 
                 DrawFadeSeparator();
             }
 
-            if (ImGui.BeginChild("##ChatTimestampTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            using (var timezoneList = ImRaii.Child("##ChatTimestampTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
             {
-                foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
+                if (timezoneList)
                 {
-                    if (!TimeZoneHelper.MatchesFilter(timeZone, chatTimestampTimeZoneFilter))
-                        continue;
-
-                    bool selected = string.Equals(configuration.ChatTimestampTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
-                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
                     {
-                        configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
-                        configuration.Save();
-                        plugin.RefreshChatTimestampSettings();
-                        chatTimestampTimeZoneFilter = "";
-                        ImGui.CloseCurrentPopup();
-                    }
+                        if (!TimeZoneHelper.MatchesFilter(timeZone, stampZoneFilter))
+                            continue;
 
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
+                        bool selected = string.Equals(configuration.ChatTimestampTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                        if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                        {
+                            configuration.ChatTimestampTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                            configuration.Save();
+                            plugin.RefreshChatTimestampSettings();
+                            stampZoneFilter = "";
+                            ImGui.CloseCurrentPopup();
+                        }
+
+                        if (selected)
+                            ImGui.SetItemDefaultFocus();
+                    }
                 }
             }
-
-            ImGui.EndChild();
-            ImGui.EndPopup();
+            }
         }
     }
 
@@ -1350,8 +1672,10 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new Vector2(420f, hasTypedTimeZone ? 336f : 296f), ImGuiCond.Always);
 
-        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        using (var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
         {
+            if (popup)
+            {
             ImGui.SetNextItemWidth(-1f);
             ImGui.InputText("##PrimaryTimezoneFilter", ref timeZoneFilter, 96);
             DrawFadeSeparator();
@@ -1370,29 +1694,30 @@ public class ConfigWindow : Window, IDisposable
                 DrawFadeSeparator();
             }
 
-            if (ImGui.BeginChild("##PrimaryTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            using (var timezoneList = ImRaii.Child("##PrimaryTimezoneScrollableList", new Vector2(0f, 244f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
             {
-                foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
+                if (timezoneList)
                 {
-                    if (!TimeZoneHelper.MatchesFilter(timeZone, timeZoneFilter))
-                        continue;
-
-                    bool selected = string.Equals(configuration.SelectedTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
-                    if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                    foreach (var timeZone in GetOrderedTimeZonesForPrimaryCombo())
                     {
-                        configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
-                        configuration.Save();
-                        timeZoneFilter = "";
-                        ImGui.CloseCurrentPopup();
-                    }
+                        if (!TimeZoneHelper.MatchesFilter(timeZone, timeZoneFilter))
+                            continue;
 
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
+                        bool selected = string.Equals(configuration.SelectedTimeZoneId, timeZone.Id, StringComparison.OrdinalIgnoreCase);
+                        if (DrawTimeZoneSelectable(TimeZoneHelper.GetComboLabel(timeZone), selected, timeZone.Id))
+                        {
+                            configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(timeZone.Id);
+                            configuration.Save();
+                            timeZoneFilter = "";
+                            ImGui.CloseCurrentPopup();
+                        }
+
+                        if (selected)
+                            ImGui.SetItemDefaultFocus();
+                    }
                 }
             }
-
-            ImGui.EndChild();
-            ImGui.EndPopup();
+            }
         }
 
         ImGui.SameLine();
@@ -1418,18 +1743,15 @@ public class ConfigWindow : Window, IDisposable
     private bool DrawTimeZoneSelectable(string label, bool selected, string timeZoneId)
     {
         var highlighted = TimeZoneHelper.ShouldHighlightTimeZone(timeZoneId);
-        if (highlighted)
-            ImGui.PushStyleColor(ImGuiCol.Text, GoldTextColor);
+        using (ImRaii.PushColor(ImGuiCol.Text, GoldTextColor, highlighted))
+        {
+            var clicked = ImGui.Selectable(label, selected);
 
-        var clicked = ImGui.Selectable(label, selected);
+            if (highlighted && ImGui.IsItemHovered())
+                DrawTooltip(T("Commonly Used"));
 
-        if (highlighted && ImGui.IsItemHovered())
-            ImGui.SetTooltip(T("Commonly Used"));
-
-        if (highlighted)
-            ImGui.PopStyleColor();
-
-        return clicked;
+            return clicked;
+        }
     }
 
     private void DrawFavoriteTimezoneButton()
@@ -1438,45 +1760,40 @@ public class ConfigWindow : Window, IDisposable
         var isFavorite = configuration.FavoriteTimeZoneIds.Any(id =>
             string.Equals(TimeZoneHelper.NormalizeTimeZoneId(id), normalizedId, StringComparison.OrdinalIgnoreCase));
 
-        if (isFavorite)
+        using (ImRaii.PushColor(ImGuiCol.Text, GoldTextColor, isFavorite))
+        using (ImRaii.PushColor(ImGuiCol.Button, new Vector4(0.36f, 0.26f, 0.08f, 0.95f), isFavorite))
+        using (ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(0.48f, 0.34f, 0.10f, 1f), isFavorite))
+        using (ImRaii.PushColor(ImGuiCol.ButtonActive, new Vector4(0.56f, 0.40f, 0.12f, 1f), isFavorite))
         {
-            ImGui.PushStyleColor(ImGuiCol.Text, GoldTextColor);
-            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.36f, 0.26f, 0.08f, 0.95f));
-            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.48f, 0.34f, 0.10f, 1f));
-            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.56f, 0.40f, 0.12f, 1f));
-        }
-
-        if (ImGui.Button("★##FavoriteTimezone", new Vector2(30f, 0f)))
-        {
-            if (isFavorite)
+            if (ImGui.Button("★##FavoriteTimezone", new Vector2(30f, 0f)))
             {
-                configuration.FavoriteTimeZoneIds.RemoveAll(id =>
-                    string.Equals(TimeZoneHelper.NormalizeTimeZoneId(id), normalizedId, StringComparison.OrdinalIgnoreCase));
-            }
-            else
-            {
-                configuration.FavoriteTimeZoneIds.Add(normalizedId);
-            }
+                if (isFavorite)
+                {
+                    configuration.FavoriteTimeZoneIds.RemoveAll(id =>
+                        string.Equals(TimeZoneHelper.NormalizeTimeZoneId(id), normalizedId, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    configuration.FavoriteTimeZoneIds.Add(normalizedId);
+                }
 
-            configuration.Save();
+                configuration.Save();
+            }
         }
 
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(isFavorite ? T("Remove from favorites") : T("Add to favorites"));
-
-        if (isFavorite)
-            ImGui.PopStyleColor(4);
+            DrawTooltip(isFavorite ? T("Remove from favorites") : T("Add to favorites"));
     }
 
     private void DrawFavoriteTimezonesSection()
     {
         ImGui.Spacing();
 
-        var arrow = favoriteTimezonesExpanded ? "" : "";
+        var arrow = favZonesOpen ? "" : "";
         var headerStart = ImGui.GetCursorScreenPos();
         var headerHeight = ImGui.GetTextLineHeightWithSpacing();
         if (ImGui.InvisibleButton("##FavoriteTimezonesHeader", new Vector2(ImGui.GetContentRegionAvail().X, headerHeight)))
-            favoriteTimezonesExpanded = !favoriteTimezonesExpanded;
+            favZonesOpen = !favZonesOpen;
 
         var headerHovered = ImGui.IsItemHovered();
         var drawList = ImGui.GetWindowDrawList();
@@ -1486,7 +1803,7 @@ public class ConfigWindow : Window, IDisposable
         var iconWidth = ImGui.CalcTextSize(arrow).X + 16f;
         drawList.AddText(new Vector2(headerStart.X + iconWidth, headerStart.Y), ImGui.GetColorU32(headerHovered ? ImGui.GetStyle().Colors[(int)ImGuiCol.Text] : ImGui.GetStyle().Colors[(int)ImGuiCol.Text]), T("Favorite Timezones"));
 
-        if (!favoriteTimezonesExpanded)
+        if (!favZonesOpen)
             return;
 
         ImGui.TextDisabled(T("Favorite timezones can be selected to change the current timezone"));
@@ -1528,48 +1845,52 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SetNextWindowPos(new Vector2(buttonMin.X, buttonMax.Y), ImGuiCond.Always);
         ImGui.SetNextWindowSize(new Vector2(420f, 266f), ImGuiCond.Always);
 
-        if (ImGui.BeginPopup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
+        using (var popup = ImRaii.Popup(popupId, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoMove))
         {
+            if (popup)
+            {
             ImGui.SetNextItemWidth(-1f);
-            ImGui.InputText("##CountryTimezoneFilter", ref countryTimeZoneFilter, 96);
+            ImGui.InputText("##CountryTimezoneFilter", ref countryZoneFilter, 96);
             DrawFadeSeparator();
 
-            if (ImGui.BeginChild("##CountryTimezoneScrollableList", new Vector2(0f, 214f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+            using (var timezoneList = ImRaii.Child("##CountryTimezoneScrollableList", new Vector2(0f, 214f), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
             {
-                foreach (var option in TimeZoneHelper.GetCountryTimeZoneOptions())
+                if (timezoneList)
                 {
-                    if (!TimeZoneHelper.MatchesCountryFilter(option, countryTimeZoneFilter))
-                        continue;
-
-                    var selected = selectedCountryTimeZone != null
-                        && string.Equals(selectedCountryTimeZone.CountryName, option.CountryName, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(selectedCountryTimeZone.TimeZoneId, option.TimeZoneId, StringComparison.OrdinalIgnoreCase);
-
-                    if (ImGui.Selectable(option.Label, selected))
+                    foreach (var option in TimeZoneHelper.GetCountryTimeZoneOptions())
                     {
-                        selectedCountryTimeZone = option;
-                        countryTimeZoneFilter = "";
-                        ImGui.CloseCurrentPopup();
-                    }
+                        if (!TimeZoneHelper.MatchesCountryFilter(option, countryZoneFilter))
+                            continue;
 
-                    if (selected)
-                        ImGui.SetItemDefaultFocus();
+                        var selected = selectedCountryTimeZone != null
+                            && string.Equals(selectedCountryTimeZone.CountryName, option.CountryName, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(selectedCountryTimeZone.TimeZoneId, option.TimeZoneId, StringComparison.OrdinalIgnoreCase);
+
+                        if (ImGui.Selectable(option.Label, selected))
+                        {
+                            selectedCountryTimeZone = option;
+                            countryZoneFilter = "";
+                            ImGui.CloseCurrentPopup();
+                        }
+
+                        if (selected)
+                            ImGui.SetItemDefaultFocus();
+                    }
                 }
             }
-
-            ImGui.EndChild();
-            ImGui.EndPopup();
+            }
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(selectedCountryTimeZone == null);
-        if (ImGui.Button("✓##ApplyCountryTimezone", new Vector2(28f, 0f)) && selectedCountryTimeZone != null)
+        using (ImRaii.Disabled(selectedCountryTimeZone == null))
         {
-            configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(selectedCountryTimeZone.TimeZoneId);
-            configuration.Save();
-            timeZoneFilter = "";
+            if (ImGui.Button("✓##ApplyCountryTimezone", new Vector2(28f, 0f)) && selectedCountryTimeZone != null)
+            {
+                configuration.SelectedTimeZoneId = TimeZoneHelper.NormalizeTimeZoneId(selectedCountryTimeZone.TimeZoneId);
+                configuration.Save();
+                timeZoneFilter = "";
+            }
         }
-        ImGui.EndDisabled();
 
         ImGui.TextDisabled(T("Search by country and hit \"✓\" to automaticaly find timezone."));
     }
@@ -1606,8 +1927,10 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.SetNextItemWidth(118f);
 
-        if (ImGui.BeginCombo("##TimeFormat", T(formatNames[formatIndex])))
+        using (var combo = ImRaii.Combo("##TimeFormat", T(formatNames[formatIndex])))
         {
+            if (combo)
+            {
             for (int i = 0; i < formatNames.Length; i++)
             {
                 bool selected = i == formatIndex;
@@ -1622,7 +1945,7 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
 
-            ImGui.EndCombo();
+            }
         }
     }
 
@@ -1635,8 +1958,10 @@ public class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.SetNextItemWidth(88f);
 
-        if (ImGui.BeginCombo("##ColonAnimation", T(colonNames[Math.Clamp(colonIndex, 0, colonNames.Length - 1)])))
+        using (var combo = ImRaii.Combo("##ColonAnimation", T(colonNames[Math.Clamp(colonIndex, 0, colonNames.Length - 1)])))
         {
+            if (combo)
+            {
             for (int i = 0; i < colonNames.Length; i++)
             {
                 bool selected = i == colonIndex;
@@ -1650,7 +1975,7 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
 
-            ImGui.EndCombo();
+            }
         }
     }
 
@@ -1764,9 +2089,14 @@ public class ConfigWindow : Window, IDisposable
             DrawLocalTimeIconSettings(profile);
         });
 
+        if (scrollTarget == ConfigTabRequest.AppearanceAlarmOverlay)
+            ImGui.SetNextItemOpen(true, ImGuiCond.Always);
+
         DrawAppearanceCategory("Extras", "", "Extras", () =>
         {
             DrawAppearanceGroupTitle("Alarm Overlay", "Extras");
+            if (scrollTarget == ConfigTabRequest.AppearanceAlarmOverlay)
+                ImGui.SetScrollHereY(0.18f);
             DrawOverlayTextAppearanceSettings(true);
             DrawAppearanceSeparator();
 
@@ -1815,7 +2145,7 @@ public class ConfigWindow : Window, IDisposable
     private void DrawAppearanceUndoIconOnRow(string undoKey, string tooltip, Vector2 rowMin, Vector2 rowMax)
     {
         const string icon = "";
-        var hasUndo = appearanceUndoStacks.TryGetValue(undoKey, out var stack) && stack.Count > 0;
+        var hasUndo = undoStacks.TryGetValue(undoKey, out var stack) && stack.Count > 0;
         var color = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
         var hoverColor = new Vector4(1f, 0.45f, 0.45f, 1f);
         var hovered = false;
@@ -1835,15 +2165,15 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (hovered)
-            ImGui.SetTooltip(T(tooltip));
+            DrawTooltip(T(tooltip));
     }
 
     private void SaveAppearanceChange(string undoKey, ClockProfile before)
     {
-        if (!appearanceUndoStacks.TryGetValue(undoKey, out var stack))
+        if (!undoStacks.TryGetValue(undoKey, out var stack))
         {
             stack = new List<ClockProfile>();
-            appearanceUndoStacks[undoKey] = stack;
+            undoStacks[undoKey] = stack;
         }
 
         stack.Add(before.Clone());
@@ -1855,7 +2185,7 @@ public class ConfigWindow : Window, IDisposable
 
     private void UndoAppearanceChange(string undoKey)
     {
-        if (!appearanceUndoStacks.TryGetValue(undoKey, out var stack) || stack.Count == 0)
+        if (!undoStacks.TryGetValue(undoKey, out var stack) || stack.Count == 0)
             return;
 
         var profile = configuration.GetActiveProfile();
@@ -2184,8 +2514,10 @@ public class ConfigWindow : Window, IDisposable
             fontIndex = 0;
 
         ImGui.SetNextItemWidth(112f);
-        if (ImGui.BeginCombo(T("Clock Font"), T(fontNames[fontIndex])))
+        using (var combo = ImRaii.Combo(T("Clock Font"), T(fontNames[fontIndex])))
         {
+            if (combo)
+            {
             for (int i = 0; i < fontNames.Length; i++)
             {
                 var fontValue = fontValues[i];
@@ -2208,7 +2540,7 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
 
-            ImGui.EndCombo();
+            }
         }
     }
 
@@ -2216,13 +2548,55 @@ public class ConfigWindow : Window, IDisposable
     {
         var profile = configuration.GetActiveProfile();
         var undoBefore = profile.Clone();
+
+        if (nextAlarm)
+        {
+            var alarmDisplay = configuration.ShowNextAlarmOnOverlay;
+            if (Checkbox($"{T("Alarm Display")}##AlarmOverlayDisplayToggle", ref alarmDisplay))
+            {
+                configuration.ShowNextAlarmOnOverlay = alarmDisplay;
+                configuration.Save();
+            }
+
+            ImGui.SameLine(0f, 18f);
+            ImGui.SetNextItemWidth(LocalAppearanceSliderWidth);
+            var alarmScale = configuration.NextAlarmOverlayTextScale;
+            if (DrawEditableSliderFloat("Text Size", ref alarmScale, 0.45f, 1.8f, "%.2f", "NextAlarmOverlayTextSize", "Extras", undoBefore))
+            {
+                configuration.NextAlarmOverlayTextScale = alarmScale;
+                configuration.Save();
+            }
+
+            ImGui.SameLine(0f, 18f);
+            ImGui.SetNextItemWidth(LocalAppearanceSliderWidth);
+            var alarmVertical = configuration.NextAlarmOverlayVerticalOffset;
+            if (DrawEditableSliderFloat("Vertical Offset", ref alarmVertical, -40.0f, 40.0f, "%.1f", "NextAlarmOverlayVerticalOffset", "Extras", undoBefore))
+            {
+                configuration.NextAlarmOverlayVerticalOffset = alarmVertical;
+                configuration.Save();
+            }
+
+            ImGui.SameLine(0f, 18f);
+            ImGui.SetNextItemWidth(LocalAppearanceSliderWidth);
+            var alarmHorizontal = configuration.NextAlarmOverlayHorizontalOffset;
+            if (DrawEditableSliderFloat("Horizontal Offset", ref alarmHorizontal, -80.0f, 80.0f, "%.1f", "NextAlarmOverlayHorizontalOffset", "Extras", undoBefore))
+            {
+                configuration.NextAlarmOverlayHorizontalOffset = alarmHorizontal;
+                configuration.Save();
+            }
+
+            ImGui.Spacing();
+        }
+
         var styleNames = new[] { "Classic", "Minimal", "Strong Shadow", "Soft Glass", "Retro Panel", "Digital", "Tech", "Cartoon", "Countdown" };
         var style = nextAlarm ? profile.NextAlarmOverlayDisplayStyle : profile.MaintenanceOverlayDisplayStyle;
         var styleIndex = Math.Clamp((int)style, 0, styleNames.Length - 1);
 
         ImGui.SetNextItemWidth(114f);
-        if (ImGui.BeginCombo($"{T("Display Style")}##{(nextAlarm ? "NextAlarmOverlayStyle" : "MaintenanceOverlayStyle")}", T(styleNames[styleIndex])))
+        using (var combo = ImRaii.Combo($"{T("Display Style")}##{(nextAlarm ? "NextAlarmOverlayStyle" : "MaintenanceOverlayStyle")}", T(styleNames[styleIndex])))
         {
+            if (combo)
+            {
             for (var i = 0; i < styleNames.Length; i++)
             {
                 var selected = i == styleIndex;
@@ -2240,7 +2614,7 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
 
-            ImGui.EndCombo();
+            }
         }
 
         var shadow = nextAlarm ? profile.NextAlarmOverlayShowShadowText : profile.MaintenanceOverlayShowShadowText;
@@ -2297,17 +2671,17 @@ public class ConfigWindow : Window, IDisposable
         var changed = ImGui.ColorEdit4(id, ref color, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.NoLabel | ImGuiColorEditFlags.AlphaBar);
 
         if (undoKey != null && undoBefore != null && ImGui.IsItemActivated())
-            colorEditUndoStart[id] = undoBefore.Clone();
+            colorUndo[id] = undoBefore.Clone();
 
         if (changed)
             configuration.Save();
 
         if (undoKey != null && ImGui.IsItemDeactivatedAfterEdit())
         {
-            if (colorEditUndoStart.TryGetValue(id, out var beforeEdit))
+            if (colorUndo.TryGetValue(id, out var beforeEdit))
             {
                 SaveAppearanceChange(undoKey, beforeEdit);
-                colorEditUndoStart.Remove(id);
+                colorUndo.Remove(id);
             }
         }
 
@@ -2315,6 +2689,183 @@ public class ConfigWindow : Window, IDisposable
         ImGui.TextUnformatted(T(label));
     }
 
+
+
+    private void DrawAlarmTimezoneSelectorPage(Vector2 start, float width, float height)
+    {
+        var contentWidth = MathF.Max(120f, width - 24f);
+        var x = start.X + 12f;
+        ImGui.SetCursorScreenPos(new Vector2(x, start.Y));
+
+        using (ImRaii.PushStyle(ImGuiStyleVar.FrameRounding, 4f))
+        {
+            ImGui.SetNextItemWidth(contentWidth);
+            ImGui.InputText("##AlarmEditorTimezoneSearch", ref alarmZoneFilter, 96);
+        }
+
+        var inputMin = ImGui.GetItemRectMin();
+        var inputMax = ImGui.GetItemRectMax();
+        var inputActive = ImGui.IsItemActive();
+        if (string.IsNullOrEmpty(alarmZoneFilter) && !inputActive)
+        {
+            var disabled = ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled];
+            var placeholderX = inputMin.X + 8f;
+            var placeholderY = inputMin.Y + MathF.Floor((inputMax.Y - inputMin.Y - ImGui.GetTextLineHeight()) * 0.5f);
+
+            using (plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+            {
+                ImGui.GetWindowDrawList().AddText(new Vector2(placeholderX, placeholderY), ImGui.GetColorU32(new Vector4(disabled.X, disabled.Y, disabled.Z, 0.72f)), "\uf002");
+                placeholderX += ImGui.CalcTextSize("\uf002").X + 6f;
+            }
+
+            ImGui.GetWindowDrawList().AddText(new Vector2(placeholderX, placeholderY), ImGui.GetColorU32(new Vector4(disabled.X, disabled.Y, disabled.Z, 0.72f)), T("Search"));
+        }
+
+        var listStart = new Vector2(x, start.Y + ImGui.GetFrameHeight() + 8f);
+        ImGui.SetCursorScreenPos(listStart);
+        using (var list = ImRaii.Child("##AlarmEditorTimezoneList", new Vector2(contentWidth, MathF.Max(82f, height - ImGui.GetFrameHeight() - 10f)), false, ImGuiWindowFlags.AlwaysVerticalScrollbar))
+        {
+            if (!list)
+                return;
+
+            RefreshAlarmZoneFilteredOptions();
+            DrawAlarmTimezoneRows();
+        }
+    }
+
+
+    private void RefreshAlarmZoneFilteredOptions()
+    {
+        var filter = alarmZoneFilter.Trim();
+        if (string.Equals(alarmZoneFilteredText, filter, StringComparison.Ordinal))
+            return;
+
+        alarmZoneFilteredText = filter;
+        alarmZoneFilteredOptions.Clear();
+
+        foreach (var timeZone in alarmZoneOptions)
+        {
+            if (MatchesAlarmEditorTimeZoneFilter(timeZone))
+                alarmZoneFilteredOptions.Add(timeZone);
+        }
+    }
+
+    private void DrawAlarmTimezoneRows()
+    {
+        var serverLabel = T("Server Time");
+        var eorzeaLabel = T("Eorzea Time");
+        var showServer = MatchesAlarmEditorTimeZoneFilter(TimeZoneHelper.ServerTimeZoneId, serverLabel);
+        var showEorzea = MatchesAlarmEditorTimeZoneFilter(TimeZoneHelper.EorzeaTimeZoneId, eorzeaLabel);
+        var specialRows = (showServer ? 1 : 0) + (showEorzea ? 1 : 0);
+        var totalRows = specialRows + alarmZoneFilteredOptions.Count;
+
+        if (totalRows == 0)
+        {
+            ImGui.TextDisabled(T("No results found."));
+            return;
+        }
+
+        var rowHeight = ImGui.GetTextLineHeightWithSpacing();
+        var startY = ImGui.GetCursorPosY();
+        var scrollY = ImGui.GetScrollY();
+        var visibleHeight = ImGui.GetWindowHeight();
+        var firstRow = Math.Clamp((int)MathF.Floor(scrollY / rowHeight), 0, totalRows);
+        var lastRow = Math.Clamp(firstRow + (int)MathF.Ceiling(visibleHeight / rowHeight) + 3, 0, totalRows);
+
+        ImGui.SetCursorPosY(startY + firstRow * rowHeight);
+        for (var row = firstRow; row < lastRow; row++)
+            DrawAlarmTimezoneRow(row, showServer, showEorzea, serverLabel, eorzeaLabel);
+
+        ImGui.SetCursorPosY(startY + totalRows * rowHeight);
+        ImGui.Dummy(Vector2.Zero);
+    }
+
+    private void DrawAlarmTimezoneRow(int row, bool showServer, bool showEorzea, string serverLabel, string eorzeaLabel)
+    {
+        if (showServer)
+        {
+            if (row == 0)
+            {
+                DrawAlarmTimezoneSelectable(TimeZoneHelper.ServerTimeZoneId, serverLabel, true);
+                return;
+            }
+
+            row--;
+        }
+
+        if (showEorzea)
+        {
+            if (row == 0)
+            {
+                DrawAlarmTimezoneSelectable(TimeZoneHelper.EorzeaTimeZoneId, eorzeaLabel, true);
+                return;
+            }
+
+            row--;
+        }
+
+        if (row >= 0 && row < alarmZoneFilteredOptions.Count)
+        {
+            var timeZone = alarmZoneFilteredOptions[row];
+            DrawAlarmTimezoneSelectable(timeZone.Id, timeZone.Label, false);
+        }
+    }
+
+    private void DrawAlarmTimezoneSelectable(string timeZoneId, string label, bool specialGameTime)
+    {
+        if (!MatchesAlarmEditorTimeZoneFilter(timeZoneId, label))
+            return;
+
+        var normalized = TimeZoneHelper.NormalizeTimeZoneId(timeZoneId);
+        var selected = string.Equals(GetAlarmEditorTimeZone(), normalized, StringComparison.OrdinalIgnoreCase);
+        using (ImRaii.PushColor(ImGuiCol.Text, GoldTextColor, specialGameTime))
+        {
+            if (ImGui.Selectable(label, selected))
+            {
+                configuration.AlarmEditorDateOverrideText = string.Empty;
+                configuration.AlarmEditorTimeZoneId = normalized;
+                editingAlarmTimeZoneId = normalized;
+                configuration.Save();
+            }
+        }
+
+        if (selected)
+            ImGui.SetItemDefaultFocus();
+    }
+
+    private bool MatchesAlarmEditorTimeZoneFilter(string timeZoneId, string label)
+    {
+        if (string.IsNullOrWhiteSpace(alarmZoneFilter))
+            return true;
+
+        var needle = alarmZoneFilter.Trim();
+        return timeZoneId.Contains(needle, StringComparison.OrdinalIgnoreCase)
+            || label.Contains(needle, StringComparison.OrdinalIgnoreCase)
+            || TimeZoneHelper.ToShortText(timeZoneId).Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool MatchesAlarmEditorTimeZoneFilter(AlarmZoneOption timeZone)
+    {
+        if (string.IsNullOrWhiteSpace(alarmZoneFilter))
+            return true;
+
+        var needle = alarmZoneFilter.Trim();
+        return timeZone.Id.Contains(needle, StringComparison.OrdinalIgnoreCase)
+            || timeZone.Label.Contains(needle, StringComparison.OrdinalIgnoreCase)
+            || timeZone.ShortText.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetAlarmEditorTimeZonePanelText()
+    {
+        var editorZone = GetAlarmEditorTimeZone();
+        if (TimeZoneHelper.IsServerTime(editorZone))
+            return T("Server Time");
+
+        if (TimeZoneHelper.IsEorzeaTime(editorZone))
+            return T("Eorzea Time");
+
+        return TimeZoneHelper.ToShortText(editorZone);
+    }
 
     private bool DrawCreateAlarmActionRow(string editorZone, bool isEditingAlarm, bool alarmInPast, bool overlayMode = false)
     {
@@ -2333,19 +2884,20 @@ public class ConfigWindow : Window, IDisposable
             ImGui.SetCursorPosX(alarmEditorControlStartX + MathF.Max(0f, (totalWidth - rowWidth) * 0.5f));
         }
 
-        ImGui.BeginDisabled(isEditingAlarm || alarmInPast);
-        if (DrawCreateAlarmIconButton("AddAlarmIcon", "\uf0c7", pulseAddAlarm ? GoldTextColor : Vector4.One, T("Add Alarm"), isEditingAlarm || alarmInPast))
+        using (ImRaii.Disabled(isEditingAlarm || alarmInPast))
         {
-            AlarmConfigurationService.AddFromEditor(configuration, editorZone);
-            ResetAlarmEditorQuickOptions();
-            chatAlarmSetupPending = false;
-            editingAlarmTimeZoneId = null;
-            configuration.Save();
-            completed = true;
+            if (DrawCreateAlarmIconButton("AddAlarmIcon", "\uf0c7", pulseAddAlarm ? GoldTextColor : Vector4.One, T("Add Alarm"), isEditingAlarm || alarmInPast))
+            {
+                AlarmConfigurationService.AddFromEditor(configuration, editorZone);
+                ResetAlarmEditorQuickOptions();
+                chatAlarmSetupPending = false;
+                editingAlarmTimeZoneId = null;
+                configuration.Save();
+                completed = true;
+            }
         }
-        ImGui.EndDisabled();
         if (alarmInPast && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(T("Can't create a Alarm for the past!"));
+            DrawTooltip(T("Can't create a Alarm for the past!"));
 
         if (!overlayMode)
         {
@@ -2357,18 +2909,19 @@ public class ConfigWindow : Window, IDisposable
         }
 
         ImGui.SameLine();
-        ImGui.BeginDisabled(!isEditingAlarm);
-        if (DrawCreateAlarmIconButton("EditAlarmIcon", "\uf31c", isEditingAlarm ? new Vector4(0.82f, 0.62f, 1.0f, 1f) : Vector4.One, T("Edit Alarm"), !isEditingAlarm) && editingAlarmId.HasValue)
+        using (ImRaii.Disabled(!isEditingAlarm))
         {
-            if (AlarmConfigurationService.UpdateFromEditor(configuration, editingAlarmId.Value, editorZone))
+            if (DrawCreateAlarmIconButton("EditAlarmIcon", "\uf31c", isEditingAlarm ? new Vector4(0.82f, 0.62f, 1.0f, 1f) : Vector4.One, T("Edit Alarm"), !isEditingAlarm) && editingAlarmId.HasValue)
             {
-                configuration.AlarmEditorMessage = string.Empty;
-                configuration.Save();
-                ClearAlarmEditingState();
-                completed = true;
+                if (AlarmConfigurationService.UpdateFromEditor(configuration, editingAlarmId.Value, editorZone))
+                {
+                    configuration.AlarmEditorMessage = string.Empty;
+                    configuration.Save();
+                    ClearAlarmEditingState();
+                    completed = true;
+                }
             }
         }
-        ImGui.EndDisabled();
 
         if (overlayMode && isEditingAlarm && editingAlarmId.HasValue)
         {
@@ -2402,7 +2955,7 @@ public class ConfigWindow : Window, IDisposable
 
     private void SetAlarmPanelPage(int page)
     {
-        page = Math.Clamp(page, 0, 3);
+        page = Math.Clamp(page, 0, 4);
         if (alarmPanelPage == page)
             return;
 
@@ -2419,7 +2972,7 @@ public class ConfigWindow : Window, IDisposable
         var width = GetAlarmPanelWidth();
         var start = ImGui.GetCursorScreenPos();
         var rowHeight = 42f;
-        var panelHeight = 176f;
+        var panelHeight = alarmPanelPage == 4 ? 226f : 218f;
         var drawList = ImGui.GetWindowDrawList();
         var panelBg = new Vector4(0.82f, 0.82f, 0.82f, 0.08f);
         var line = new Vector4(1f, 1f, 1f, 0.08f);
@@ -2465,11 +3018,16 @@ public class ConfigWindow : Window, IDisposable
                 DrawAlarmPanelPanelBackTitle(start, width, rowHeight, T("Setup Snooze"));
                 DrawSnoozeChoiceGrid(start + new Vector2(0f, rowHeight + 12f), width);
                 break;
+            case 4:
+                DrawAlarmPanelPanelBackTitle(start, width, rowHeight, T("Timezone"));
+                DrawAlarmTimezoneSelectorPage(start + new Vector2(0f, rowHeight + 10f), width, panelHeight - rowHeight - 14f);
+                break;
             default:
                 DrawAlarmPanelOptionRow(start, width, rowHeight, "Repeat", AlarmConfigurationService.GetRepeatLabel(configuration.AlarmEditorRepeatMode), "\uf1da", 0, () => SetAlarmPanelPage(1), line);
-                DrawAlarmPanelLabelRow(start, width, rowHeight, 1, line);
-                DrawAlarmPanelOptionRow(start, width, rowHeight, "Sound", configuration.AlarmSoundId == 0 ? T("None") : configuration.AlarmSoundId.ToString(CultureInfo.InvariantCulture), "\uf028", 2, () => SetAlarmPanelPage(2), line);
-                DrawAlarmPanelOptionRow(start, width, rowHeight, "Setup Snooze", configuration.AlarmEditorSnoozeEnabled ? $"{configuration.AlarmEditorSnoozeMinutes} {T("Minutes")}" : T("None"), "\uf236", 3, () => SetAlarmPanelPage(3), line);
+                DrawAlarmPanelOptionRow(start, width, rowHeight, "Timezone", GetAlarmEditorTimeZonePanelText(), "\uf34e", 1, () => SetAlarmPanelPage(4), line);
+                DrawAlarmPanelLabelRow(start, width, rowHeight, 2, line);
+                DrawAlarmPanelOptionRow(start, width, rowHeight, "Sound", configuration.AlarmSoundId == 0 ? T("None") : configuration.AlarmSoundId.ToString(CultureInfo.InvariantCulture), "\uf028", 3, () => SetAlarmPanelPage(2), line);
+                DrawAlarmPanelOptionRow(start, width, rowHeight, "Setup Snooze", configuration.AlarmEditorSnoozeEnabled ? $"{configuration.AlarmEditorSnoozeMinutes} {T("Minutes")}" : T("None"), "\uf236", 4, () => SetAlarmPanelPage(3), line);
                 break;
         }
 
@@ -2683,33 +3241,28 @@ public class ConfigWindow : Window, IDisposable
             drawList.AddText(rowMin + new Vector2(14f, 12f), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.88f)), "\uf02b");
         drawList.AddText(rowMin + new Vector2(42f, 11f), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.94f)), T("Label"));
 
+        // ImGui owns the actual input state.
         var inputMin = new Vector2(rowMin.X + width * 0.42f, rowMin.Y + 6f);
         var inputWidth = width * 0.52f;
         ImGui.SetCursorScreenPos(inputMin);
-        ImGui.PushItemWidth(inputWidth);
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0f, 0f, 0f, 0f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(1f, 1f, 1f, 0.04f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(1f, 1f, 1f, 0.06f));
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 1f, 1f, 0f));
-        if (ImGui.InputText("##AlarmPanelAlarmMessage", ref configuration.AlarmEditorMessage, 128))
-            configuration.Save();
-        var inputActive = ImGui.IsItemActive();
-        ImGui.PopStyleColor(4);
-        ImGui.PopItemWidth();
-
-        var hasText = !string.IsNullOrEmpty(configuration.AlarmEditorMessage);
-        var visibleText = hasText ? configuration.AlarmEditorMessage : T("Alarm Message");
-        var visibleColor = hasText
-            ? new Vector4(1f, 1f, 1f, 0.98f)
-            : new Vector4(0.62f, 0.62f, 0.66f, 0.86f);
-        var visibleSize = ImGui.CalcTextSize(visibleText);
-        var textX = inputMin.X + MathF.Max(0f, (inputWidth - visibleSize.X) * 0.5f);
-        var textY = rowMin.Y + 11f;
-        drawList.AddText(new Vector2(textX, textY), ImGui.GetColorU32(visibleColor), visibleText);
-        if (inputActive && ((int)(ImGui.GetTime() * 2.0) & 1) == 0)
+        bool inputActive;
+        ImGui.SetNextItemWidth(inputWidth);
+        using (ImRaii.PushColor(ImGuiCol.FrameBg, new Vector4(0f, 0f, 0f, 0f)))
+        using (ImRaii.PushColor(ImGuiCol.FrameBgHovered, new Vector4(1f, 1f, 1f, 0.04f)))
+        using (ImRaii.PushColor(ImGuiCol.FrameBgActive, new Vector4(1f, 1f, 1f, 0.06f)))
         {
-            var caretX = hasText ? textX + visibleSize.X + 1f : textX;
-            drawList.AddLine(new Vector2(caretX, textY - 1f), new Vector2(caretX, textY + ImGui.GetTextLineHeight() + 1f), ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.95f)), 1f);
+            if (ImGui.InputText("##AlarmPanelAlarmMessage", ref configuration.AlarmEditorMessage, 128))
+                configuration.Save();
+            inputActive = ImGui.IsItemActive();
+        }
+
+        if (string.IsNullOrEmpty(configuration.AlarmEditorMessage) && !inputActive)
+        {
+            var placeholder = T("Alarm Message");
+            var placeholderSize = ImGui.CalcTextSize(placeholder);
+            var textX = inputMin.X + MathF.Max(0f, (inputWidth - placeholderSize.X) * 0.5f);
+            var textY = rowMin.Y + 11f;
+            drawList.AddText(new Vector2(textX, textY), ImGui.GetColorU32(new Vector4(0.62f, 0.62f, 0.66f, 0.86f)), placeholder);
         }
         drawList.AddLine(new Vector2(rowMin.X + 42f, rowMax.Y), new Vector2(rowMax.X, rowMax.Y), ImGui.GetColorU32(line), 1f);
     }
@@ -2761,7 +3314,7 @@ public class ConfigWindow : Window, IDisposable
         var textSize = ImGui.CalcTextSize(text);
         drawList.AddText(new Vector2(start.X + (width - textSize.X) * 0.5f, start.Y + (height - textSize.Y) * 0.5f), ImGui.GetColorU32(gold), text);
         if (hovered && blocked)
-            ImGui.SetTooltip(T("Can't create a alarm for the past!"));
+            DrawTooltip(T("Can't create a alarm for the past!"));
         if (ImGui.IsItemClicked() && !blocked)
         {
             if (CommitAlarmOverlayEditorFromHeader())
@@ -2852,6 +3405,7 @@ public class ConfigWindow : Window, IDisposable
         return DrawCreateAlarmActionRow(editorZone, isEditingAlarm, alarmInPast, false);
     }
 
+    // The overlay header "save" action reuses the same editor commit logic as the full editor page, keeping "add/edit" validation in one place.
     public bool CommitAlarmOverlayEditorFromHeader()
     {
         var isEditingAlarm = editingAlarmId.HasValue;
@@ -2884,36 +3438,42 @@ public class ConfigWindow : Window, IDisposable
 
     public bool IsEditingAlarm => editingAlarmId.HasValue;
 
-    public bool IsCapturingAlarmsWindowKeybind => capturingAlarmsWindowKeybind;
+    public bool IsCapturingAlarmsWindowKeybind => capturingAlarmHotkey;
 
     public bool IsAlarmOverlaySaveBlocked => IsAlarmEditorInPast(GetAlarmEditorTimeZone());
 
-    public bool HasSelectedAlarmPanelAlarms => alarmPanelSelectedAlarmIds.Count > 0;
+    public bool HasSelectedAlarmPanelAlarms => selectedAlarmIds.Count > 0;
 
     public void DeleteSelectedAlarmPanelAlarms()
     {
-        if (alarmPanelSelectedAlarmIds.Count == 0)
+        if (selectedAlarmIds.Count == 0)
             return;
 
-        configuration.Alarms.RemoveAll(a => alarmPanelSelectedAlarmIds.Contains(a.Id));
-        alarmPanelSelectedAlarmIds.Clear();
+        configuration.Alarms.RemoveAll(a => selectedAlarmIds.Contains(a.Id));
+        selectedAlarmIds.Clear();
         configuration.Save();
     }
 
     public void BeginNewAlarmFromOverlay()
     {
-        alarmPanelSelectedAlarmIds.Clear();
+        selectedAlarmIds.Clear();
         ClearAlarmEditingState();
         configuration.AlarmEditorMessage = string.Empty;
+        configuration.AlarmEditorDateOverrideText = string.Empty;
+        configuration.AlarmEditorTimeZoneId = configuration.SelectedTimeZoneId;
+        alarmZoneFilter = "";
         alarmPanelPage = 0;
     }
 
     public void CancelAlarmOverlayEditor()
     {
         ClearAlarmEditingState();
+        alarmZoneFilter = "";
         alarmPanelPage = 0;
     }
 
+    // The alarm history renderer is shared by the standalone /alarms overlay
+    // so selection, editing and delete behavior stay consistent
     public bool DrawAlarmPanelAlarmHistoryOverlay()
     {
         var alarms = configuration.Alarms
@@ -3022,19 +3582,24 @@ public class ConfigWindow : Window, IDisposable
         var switchHovered = ImGui.IsMouseHoveringRect(switchPos, switchPos + switchSize, true);
         var switchClicked = switchHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left);
 
-        var selected = alarmPanelSelectedAlarmIds.Contains(alarm.Id);
+        var selected = selectedAlarmIds.Contains(alarm.Id);
         if (selected)
             drawList.AddRectFilled(start, end, ImGui.GetColorU32(new Vector4(1f, 0.68f, 0.12f, 0.10f)), 8f);
         else if (rowHovered && !switchHovered)
             drawList.AddRectFilled(start, end, ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.032f)), 8f);
 
         var hasPendingSnooze = alarm.SnoozedUntilUtc > DateTime.MinValue && !alarm.SnoozeTriggered && !alarm.SnoozeCanceled;
-        if (switchClicked)
+        var canToggleAlarm = alarm.Enabled || CanReenableAlarmFromHistory(alarm);
+        if (switchClicked && canToggleAlarm)
         {
             alarm.Enabled = !alarm.Enabled;
             if (alarm.Enabled)
                 alarm.HasTriggered = false;
             configuration.Save();
+        }
+        else if (switchHovered && !canToggleAlarm)
+        {
+            DrawTooltip(T("Can't reenable a alarm for the past, Edit it instead."));
         }
 
         var editRequested = false;
@@ -3042,12 +3607,12 @@ public class ConfigWindow : Window, IDisposable
         {
             if (ImGui.GetIO().KeyCtrl)
             {
-                if (!alarmPanelSelectedAlarmIds.Add(alarm.Id))
-                    alarmPanelSelectedAlarmIds.Remove(alarm.Id);
+                if (!selectedAlarmIds.Add(alarm.Id))
+                    selectedAlarmIds.Remove(alarm.Id);
             }
             else
             {
-                alarmPanelSelectedAlarmIds.Clear();
+                selectedAlarmIds.Clear();
                 LoadAlarmIntoEditor(alarm);
                 editRequested = true;
             }
@@ -3087,15 +3652,21 @@ public class ConfigWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(detailText))
             drawList.AddText(new Vector2(start.X + 7f, start.Y + 67f), detailColor, detailText);
 
-        DrawAlarmPanelSwitchVisual(switchPos, switchSize, active, true, switchHovered);
+        DrawAlarmPanelSwitchVisual(switchPos, switchSize, active, canToggleAlarm, switchHovered);
 
         DrawAlarmPanelFadeDivider(drawList, new Vector2(start.X, end.Y - 1f), new Vector2(end.X, end.Y - 1f), 0.10f, 1.05f);
         return editRequested;
     }
 
+    private bool CanReenableAlarmFromHistory(AlarmEntry alarm)
+    {
+        return AlarmConfigurationService.TryGetPendingTriggerUtc(alarm, out var utc)
+            && utc > DateTime.UtcNow;
+    }
+
     private DateTime GetAlarmSortUtc(AlarmEntry alarm)
     {
-        return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var utc)
+        return alarm.TryGetStoredTriggerUtc(out var utc)
             ? utc
             : DateTime.MaxValue;
     }
@@ -3108,15 +3679,39 @@ public class ConfigWindow : Window, IDisposable
             return true;
         }
 
-        return TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out utc);
+        return alarm.TryGetStoredTriggerUtc(out utc);
+    }
+
+    private bool TryGetAlarmPanelDisplayLocal(AlarmEntry alarm, out DateTime local)
+    {
+        local = DateTime.MinValue;
+        var effectiveTimeZoneId = alarm.GetEffectiveTimeZoneId();
+
+        if (alarm.SnoozedUntilUtc > DateTime.MinValue && !alarm.SnoozeTriggered && !alarm.SnoozeCanceled)
+        {
+            local = TimeZoneHelper.ConvertFromUtcForDisplay(alarm.SnoozedUntilUtc, effectiveTimeZoneId);
+            return true;
+        }
+
+        if (TimeZoneHelper.IsEorzeaTime(effectiveTimeZoneId) &&
+            DateTime.TryParseExact(alarm.DateTimeText, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var storedEt))
+        {
+            local = storedEt;
+            return true;
+        }
+
+        if (!alarm.TryGetStoredTriggerUtc(out var utc))
+            return false;
+
+        local = TimeZoneHelper.ConvertFromUtcForDisplay(utc, effectiveTimeZoneId);
+        return true;
     }
 
     private (string Time, string Suffix) BuildAlarmPanelAlarmTimeParts(AlarmEntry alarm)
     {
-        if (!TryGetAlarmPanelAlarmDisplayUtc(alarm, out var utc))
+        if (!TryGetAlarmPanelDisplayLocal(alarm, out var local))
             return ("--:--", string.Empty);
 
-        var local = TimeZoneHelper.ConvertFromUtc(utc, alarm.GetEffectiveTimeZoneId());
         if (TimeFormatHelper.UsesTwelveHourClock(configuration.TimeFormat))
         {
             var hour = local.Hour % 12;
@@ -3143,8 +3738,13 @@ public class ConfigWindow : Window, IDisposable
         if (!TryGetAlarmPanelAlarmDisplayUtc(alarm, out var utc))
             return string.Empty;
 
-        var local = TimeZoneHelper.ConvertFromUtc(utc, alarm.GetEffectiveTimeZoneId()).Date;
-        var today = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.Local).Date;
+        var effectiveTimeZoneId = alarm.GetEffectiveTimeZoneId();
+        var local = TimeZoneHelper.IsEorzeaTime(effectiveTimeZoneId)
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.Local).Date
+            : TimeZoneHelper.ConvertFromUtc(utc, effectiveTimeZoneId).Date;
+        var today = TimeZoneHelper.IsEorzeaTime(effectiveTimeZoneId)
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.Local).Date
+            : TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, effectiveTimeZoneId).Date;
         var days = (local - today).Days;
 
         if (days == 0)
@@ -3226,7 +3826,7 @@ public class ConfigWindow : Window, IDisposable
         }
 
         if (hovered)
-            ImGui.SetTooltip(tooltip);
+            DrawTooltip(tooltip);
 
         return clicked;
     }
@@ -3236,9 +3836,10 @@ public class ConfigWindow : Window, IDisposable
 
     private void DrawAlarmSoundPickerPopupOnly()
     {
-        if (!ImGui.BeginPopup("ClockAlarmSoundIdPopup"))
-            return;
-
+        using (var popup = ImRaii.Popup("ClockAlarmSoundIdPopup"))
+        {
+            if (popup)
+            {
         if (ImGui.Selectable(T("None"), configuration.AlarmSoundId == 0, ImGuiSelectableFlags.DontClosePopups))
         {
             configuration.AlarmSoundId = 0;
@@ -3277,14 +3878,16 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.SetItemDefaultFocus();
         }
 
-        ImGui.EndPopup();
+            }
+        }
     }
 
     private void DrawAlarmSnoozePickerPopupOnly()
     {
-        if (!ImGui.BeginPopup("AlarmSnoozePickerPopup"))
-            return;
-
+        using (var popup = ImRaii.Popup("AlarmSnoozePickerPopup"))
+        {
+            if (popup)
+            {
         if (ImGui.Selectable(T("None"), !configuration.AlarmEditorSnoozeEnabled))
         {
             configuration.AlarmEditorSnoozeEnabled = false;
@@ -3308,14 +3911,16 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.SetItemDefaultFocus();
         }
 
-        ImGui.EndPopup();
+            }
+        }
     }
 
     private void DrawAlarmRepeatPickerPopupOnly()
     {
-        if (!ImGui.BeginPopup("AlarmRepeatPickerPopup"))
-            return;
-
+        using (var popup = ImRaii.Popup("AlarmRepeatPickerPopup"))
+        {
+            if (popup)
+            {
         var repeatNames = new[] { "Once", "Daily", "Weekly", "Weekdays", "Weekends" };
         for (var i = 0; i < repeatNames.Length; i++)
         {
@@ -3330,7 +3935,8 @@ public class ConfigWindow : Window, IDisposable
                 ImGui.SetItemDefaultFocus();
         }
 
-        ImGui.EndPopup();
+            }
+        }
     }
 
     private void DrawAlarmSnoozePickerButton()
@@ -3381,8 +3987,10 @@ public class ConfigWindow : Window, IDisposable
         if (ImGui.Button($"{T("Maintenance Overlay")}##MaintenanceOverlayMenu"))
             ImGui.OpenPopup("MaintenanceOverlayMenuPopup");
 
-        if (ImGui.BeginPopup("MaintenanceOverlayMenuPopup"))
+        using (var popup = ImRaii.Popup("MaintenanceOverlayMenuPopup"))
         {
+            if (popup)
+            {
             bool enabled = configuration.ShowMaintenanceOnOverlay;
             if (Checkbox(T("Enable"), ref enabled))
             {
@@ -3406,7 +4014,7 @@ public class ConfigWindow : Window, IDisposable
                 configuration.Save();
             }
 
-            ImGui.EndPopup();
+            }
         }
     }
 
@@ -3420,11 +4028,11 @@ public class ConfigWindow : Window, IDisposable
 
         ImGui.SetNextItemWidth(alarmEditorControlWidth > 0f ? alarmEditorControlWidth : 240f);
         var alarmMessageBg = new Vector4(0.82f, 0.82f, 0.82f, 0.08f);
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, alarmMessageBg);
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.82f, 0.82f, 0.82f, 0.11f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(0.82f, 0.82f, 0.82f, 0.13f));
-        var changed = ImGui.InputText("##AlarmMessage", ref message, 128);
-        ImGui.PopStyleColor(3);
+        bool changed;
+        using (ImRaii.PushColor(ImGuiCol.FrameBg, alarmMessageBg))
+        using (ImRaii.PushColor(ImGuiCol.FrameBgHovered, new Vector4(0.82f, 0.82f, 0.82f, 0.11f)))
+        using (ImRaii.PushColor(ImGuiCol.FrameBgActive, new Vector4(0.82f, 0.82f, 0.82f, 0.13f)))
+            changed = ImGui.InputText("##AlarmMessage", ref message, 128);
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         var active = ImGui.IsItemActive();
@@ -3621,7 +4229,7 @@ public class ConfigWindow : Window, IDisposable
         var tzHoverMin = new Vector2(dateMin.X + ((dateMax.X - dateMin.X) - tzTextSize.X) * 0.5f, dateMax.Y + 3f);
         var tzHoverMax = tzHoverMin + new Vector2(tzTextSize.X, ImGui.GetTextLineHeight());
         if (ImGui.IsMouseHoveringRect(tzHoverMin, tzHoverMax))
-            ImGui.SetTooltip(T("Change it on General."));
+            DrawTooltip(T("Change it with the Timezone option."));
 
         alarmSelectorLastMin = new Vector2(hourMin.X, MathF.Min(hourMin.Y, dateMin.Y));
         alarmSelectorLastMax = new Vector2(dateMax.X, dateMax.Y + ImGui.GetTextLineHeight() + 6f);
@@ -3655,7 +4263,9 @@ public class ConfigWindow : Window, IDisposable
             DateTime.TryParseExact(configuration.AlarmEditorDateOverrideText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var picked))
             return picked.Date;
 
-        var zoneNow = TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorZone);
+        var zoneNow = TimeZoneHelper.IsEorzeaTime(editorZone)
+            ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.Local)
+            : TimeZoneHelper.ConvertFromUtc(DateTime.UtcNow, editorZone);
         var day = Math.Clamp(configuration.AlarmEditorDay <= 0 ? zoneNow.Day : configuration.AlarmEditorDay, 1, DateTime.DaysInMonth(zoneNow.Year, zoneNow.Month));
         return new DateTime(zoneNow.Year, zoneNow.Month, day);
     }
@@ -3694,9 +4304,10 @@ public class ConfigWindow : Window, IDisposable
         if (alarmCalendarVisibleMonth == DateTime.MinValue)
             alarmCalendarVisibleMonth = new DateTime(selectedDate.Year, selectedDate.Month, 1);
 
-        if (!ImGui.BeginPopup("AlarmCalendarPopup"))
-            return;
-
+        using (var popup = ImRaii.Popup("AlarmCalendarPopup"))
+        {
+            if (popup)
+            {
         var monthText = alarmCalendarVisibleMonth.ToString("MMMM yyyy", culture);
         if (ImGui.SmallButton("‹##AlarmCalendarPrev"))
             alarmCalendarVisibleMonth = alarmCalendarVisibleMonth.AddMonths(-1);
@@ -3750,25 +4361,21 @@ public class ConfigWindow : Window, IDisposable
 
             var thisDate = new DateTime(alarmCalendarVisibleMonth.Year, alarmCalendarVisibleMonth.Month, day);
             var selected = thisDate.Date == selectedDate.Date;
-            if (selected)
+            using (ImRaii.PushColor(ImGuiCol.Button, GoldTextColor, selected))
+            using (ImRaii.PushColor(ImGuiCol.ButtonHovered, new Vector4(1f, 0.90f, 0.55f, 1f), selected))
+            using (ImRaii.PushColor(ImGuiCol.ButtonActive, new Vector4(0.82f, 0.58f, 0.16f, 1f), selected))
             {
-                ImGui.PushStyleColor(ImGuiCol.Button, GoldTextColor);
-                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(1f, 0.90f, 0.55f, 1f));
-                ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.82f, 0.58f, 0.16f, 1f));
+                if (ImGui.Button($"{day:00}##AlarmCalendarDay{day}", cell))
+                {
+                    SetAlarmEditorDate(thisDate);
+                    configuration.Save();
+                    ImGui.CloseCurrentPopup();
+                }
             }
-
-            if (ImGui.Button($"{day:00}##AlarmCalendarDay{day}", cell))
-            {
-                SetAlarmEditorDate(thisDate);
-                configuration.Save();
-                ImGui.CloseCurrentPopup();
-            }
-
-            if (selected)
-                ImGui.PopStyleColor(3);
         }
 
-        ImGui.EndPopup();
+            }
+        }
     }
 
     private bool DrawAlarmWheelSelector(string id, string[] items, ref int index, float width, string tooltip, float height = 78f, bool clickOpensPopup = false, string? popupId = null, int visibleRadius = 1, bool selectedInvalid = false, string? invalidTooltip = null)
@@ -3831,7 +4438,7 @@ public class ConfigWindow : Window, IDisposable
         if (nextIndex != index)
         {
             nextIndex = WrapIndex(nextIndex);
-            alarmWheelAnimations[id] = new AlarmWheelAnimation
+            alarmWheels[id] = new AlarmWheelAnimation
             {
                 From = index,
                 To = nextIndex,
@@ -3850,7 +4457,7 @@ public class ConfigWindow : Window, IDisposable
         drawList.PushClipRect(min, max, true);
 
         var now = ImGui.GetTime();
-        if (alarmWheelAnimations.TryGetValue(id, out var anim))
+        if (alarmWheels.TryGetValue(id, out var anim))
         {
             const double duration = 0.34;
             var p = Math.Clamp((float)((now - anim.StartedAt) / duration), 0f, 1f);
@@ -3875,7 +4482,7 @@ public class ConfigWindow : Window, IDisposable
             }
 
             if (p >= 1f)
-                alarmWheelAnimations.Remove(id);
+                alarmWheels.Remove(id);
         }
         else
         {
@@ -3892,7 +4499,7 @@ public class ConfigWindow : Window, IDisposable
         drawList.PopClipRect();
 
         if (hovered)
-            ImGui.SetTooltip(selectedInvalid && !string.IsNullOrWhiteSpace(invalidTooltip) ? invalidTooltip : tooltip);
+            DrawTooltip(selectedInvalid && !string.IsNullOrWhiteSpace(invalidTooltip) ? invalidTooltip : tooltip);
 
         return changed;
 
@@ -3913,16 +4520,22 @@ public class ConfigWindow : Window, IDisposable
 
     private string GetAlarmEditorTimeZone()
     {
-        if (editingAlarmId.HasValue || chatAlarmSetupPending)
-            return editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId;
+        if (!string.IsNullOrWhiteSpace(configuration.AlarmEditorTimeZoneId))
+            return TimeZoneHelper.NormalizeTimeZoneId(configuration.AlarmEditorTimeZoneId);
 
-        return configuration.SelectedTimeZoneId;
+        if (editingAlarmId.HasValue || chatAlarmSetupPending)
+            return TimeZoneHelper.NormalizeTimeZoneId(editingAlarmTimeZoneId ?? configuration.SelectedTimeZoneId);
+
+        return TimeZoneHelper.NormalizeTimeZoneId(configuration.SelectedTimeZoneId);
     }
 
     private bool IsAlarmEditorInPast(string editorZone)
     {
         var text = AlarmConfigurationService.BuildEditorDateTimeText(configuration, editorZone);
-        if (!TimeZoneHelper.TryParseInZone(text, editorZone, out var utc))
+        if (!DateTime.TryParseExact(text, "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var editorLocal))
+            return true;
+
+        if (!TimeZoneHelper.TryGetEditorTriggerUtc(editorLocal, editorZone, out var utc))
             return true;
 
         return utc <= DateTime.UtcNow;
@@ -3932,6 +4545,8 @@ public class ConfigWindow : Window, IDisposable
     {
         editingAlarmId = alarm.Id;
         editingAlarmTimeZoneId = alarm.GetEffectiveTimeZoneId();
+        configuration.AlarmEditorTimeZoneId = editingAlarmTimeZoneId;
+        alarmZoneFilter = "";
 
         if (!TimeZoneHelper.TryParseInZone(alarm.DateTimeText, alarm.GetEffectiveTimeZoneId(), out var alarmUtc))
             return;
@@ -3962,6 +4577,7 @@ public class ConfigWindow : Window, IDisposable
     {
         editingAlarmId = null;
         editingAlarmTimeZoneId = null;
+        alarmZoneFilter = "";
     }
 
 
@@ -4064,37 +4680,39 @@ public class ConfigWindow : Window, IDisposable
         editingAlarmId = null;
         editingAlarmTimeZoneId = null;
         timeZoneFilter = "";
-        countryTimeZoneFilter = "";
+        countryZoneFilter = "";
         selectedCountryTimeZone = null;
     }
 
     private void ShowConfigurationPopup(string message)
     {
-        configurationPopupMessage = message;
-        openConfigurationPopupNextFrame = true;
+        popupMsg = message;
+        openPopupNext = true;
     }
 
     private void DrawConfigurationResultPopup()
     {
         const string popupId = "ClockConfigurationResultPopup";
 
-        if (openConfigurationPopupNextFrame)
+        if (openPopupNext)
         {
             var center = ImGui.GetWindowPos() + (ImGui.GetWindowSize() * 0.5f);
             ImGui.SetNextWindowPos(center, ImGuiCond.Always, new Vector2(0.5f, 0.5f));
             ImGui.SetNextWindowSize(new Vector2(360f, 95f), ImGuiCond.Appearing);
             ImGui.OpenPopup(popupId);
-            openConfigurationPopupNextFrame = false;
+            openPopupNext = false;
         }
 
-        if (ImGui.BeginPopup(popupId))
+        using (var popup = ImRaii.Popup(popupId))
         {
-            var messageSize = ImGui.CalcTextSize(configurationPopupMessage);
+            if (popup)
+            {
+            var messageSize = ImGui.CalcTextSize(popupMsg);
             var availableWidth = ImGui.GetContentRegionAvail().X;
             if (messageSize.X < availableWidth)
                 ImGui.SetCursorPosX(ImGui.GetCursorPosX() + ((availableWidth - messageSize.X) * 0.5f));
 
-            ImGui.TextWrapped(configurationPopupMessage);
+            ImGui.TextWrapped(popupMsg);
             ImGui.Spacing();
 
             var buttonSize = new Vector2(80f, 0f);
@@ -4102,7 +4720,7 @@ public class ConfigWindow : Window, IDisposable
             if (ImGui.Button(T("Ok"), buttonSize))
                 ImGui.CloseCurrentPopup();
 
-            ImGui.EndPopup();
+            }
         }
     }
 
@@ -4152,10 +4770,10 @@ public class ConfigWindow : Window, IDisposable
                 value = Math.Clamp(editingSliderValue, min, max);
                 editingSliderId = null;
 
-                if (undoKey != null && sliderEditUndoStart.TryGetValue(key, out var beforeEdit))
+                if (undoKey != null && sliderUndo.TryGetValue(key, out var beforeEdit))
                 {
                     SaveAppearanceChange(undoKey, beforeEdit);
-                    sliderEditUndoStart.Remove(key);
+                    sliderUndo.Remove(key);
                 }
 
                 return true;
@@ -4167,14 +4785,14 @@ public class ConfigWindow : Window, IDisposable
         bool changed = ImGui.SliderFloat($"{T(label)}##{key}", ref value, min, max, format);
 
         if (undoKey != null && undoBefore != null && ImGui.IsItemActivated())
-            sliderEditUndoStart[key] = undoBefore.Clone();
+            sliderUndo[key] = undoBefore.Clone();
 
         if (undoKey != null && ImGui.IsItemDeactivatedAfterEdit())
         {
-            if (sliderEditUndoStart.TryGetValue(key, out var beforeEdit))
+            if (sliderUndo.TryGetValue(key, out var beforeEdit))
             {
                 SaveAppearanceChange(undoKey, beforeEdit);
-                sliderEditUndoStart.Remove(key);
+                sliderUndo.Remove(key);
             }
         }
 
@@ -4183,8 +4801,8 @@ public class ConfigWindow : Window, IDisposable
             editingSliderId = key;
             editingSliderValue = value;
             focusSliderInputNextFrame = true;
-            if (undoKey != null && undoBefore != null && !sliderEditUndoStart.ContainsKey(key))
-                sliderEditUndoStart[key] = undoBefore.Clone();
+            if (undoKey != null && undoBefore != null && !sliderUndo.ContainsKey(key))
+                sliderUndo[key] = undoBefore.Clone();
         }
 
         return changed;
@@ -4298,8 +4916,10 @@ public class ConfigWindow : Window, IDisposable
         currentIndex = Math.Clamp(currentIndex, 0, items.Length - 1);
         var preview = translateItems ? T(items[currentIndex]) : items[currentIndex];
 
-        if (ImGui.BeginCombo(T(label), preview))
+        using (var combo = ImRaii.Combo(T(label), preview))
         {
+            if (combo)
+            {
             for (int i = 0; i < items.Length; i++)
             {
                 bool isSelected = i == currentIndex;
@@ -4314,7 +4934,7 @@ public class ConfigWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
 
-            ImGui.EndCombo();
+            }
         }
 
         return changed;
