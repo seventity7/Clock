@@ -51,7 +51,7 @@ public class ConfigWindow : Window, IDisposable
         public string ShortText { get; }
     }
 
-    private const string HelpUrl = "https://github.com/seventity7/clock";
+    private const string HelpUrl = "https://github.com/LatencyBryer/clock";
 
     private readonly Plugin plugin;
     private readonly Configuration configuration;

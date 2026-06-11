@@ -6,7 +6,7 @@
 
 [![Verified Plugin - Dalamud](https://img.shields.io/badge/✔%20Verified%20Plugin-Dalamud-red?style=for-the-badge)](#)
 [![Discord](https://img.shields.io/badge/Discord-Bryer-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discordapp.com/users/896449611168874507)
-[![AGPL-3.0 License](https://img.shields.io/badge/⚖️%20License-AGPL--3.0-636e72?style=for-the-badge)](https://github.com/seventity7/clock?tab=AGPL-3.0-1-ov-file)
+[![AGPL-3.0 License](https://img.shields.io/badge/⚖️%20License-AGPL--3.0-636e72?style=for-the-badge)](https://github.com/LatencyBryer/clock?tab=AGPL-3.0-1-ov-file)
 
 `Clock` adds a clean, customizable clock overlay to Final Fantasy XIV.
 It helps you track different timezones, create alarms, compare times, customize chat timestamps and manage useful time tools directly in-game.
@@ -292,8 +292,8 @@ It is useful when playing with people from different regions, helping everyone r
   <tr>
     <td align="center" width="220">
       <h3>Latency Bryer</h3>
-      <a href="https://github.com/seventity7">
-        <img src="https://github.com/seventity7.png" width="120" height="120" style="border-radius: 50%;" alt="GitHub profile picture" />
+      <a href="https://github.com/LatencyBryer">
+        <img src="https://github.com/LatencyBryer.png" width="120" height="120" style="border-radius: 50%;" alt="GitHub profile picture" />
       </a>
       <br /><br />
       <a href="https://discordapp.com/users/896449611168874507">
@@ -303,7 +303,7 @@ It is useful when playing with people from different regions, helping everyone r
       <a href="https://bryerpl.carrd.co/">
         <img src="https://img.shields.io/badge/Website-bryerpl.carrd.co-00b894?style=for-the-badge&logo=google-chrome&logoColor=white" alt="Website" />
       </a>
-      <a href="https://github.com/seventity7/clock/issues">
+      <a href="https://github.com/LatencyBryer/clock/issues">
         <img src="https://img.shields.io/badge/GitHub-Issues-181717?style=for-the-badge&logo=github&logoColor=white" alt="Github Issues" />
       </a>
     </td>

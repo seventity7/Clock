@@ -1,7 +1,7 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <Version>1.0.7.3</Version>
-    <PackageProjectUrl>https://github.com/seventity7/clock</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/LatencyBryer/clock</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
 
