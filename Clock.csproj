@@ -11,8 +11,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="Fonts/DS-DIGI.ttf" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Fonts/Technology.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fonts/E1234.ttf" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Fonts/ka1.ttf" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="Fonts/Beautiful Police Officer.otf" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Fonts/DigitTech7-Regular.otf" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

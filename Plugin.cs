@@ -168,9 +168,9 @@ public sealed class Plugin : IDalamudPlugin
         // keeping them centralized to avoid rebuilding font atlases while the UI is rendering.
         digitalClockFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "digital");
         alarmSessionDigitalFontHandle = CreateClockFontHandle("DS-DIGI.ttf", "alarm session digital", pluginInterface.UiBuilder.FontDefaultSizePx * 1.95f);
-        technologyClockFontHandle = CreateClockFontHandle("Technology.ttf", "technology");
+        technologyClockFontHandle = CreateClockFontHandle("E1234.ttf", "technology");
         ka1ClockFontHandle = CreateClockFontHandle("ka1.ttf", "ka1");
-        countdownClockFontHandle = CreateClockFontHandle("Beautiful Police Officer.otf", "countdown");
+        countdownClockFontHandle = CreateClockFontHandle("DigitTech7-Regular.otf", "countdown");
         alarmPanelFont = CreateWindowsFontHandle("segoeui.ttf", 42f, "alarmPanel alarm");
         alarmTitleFont = CreateWindowsFontHandle("segoeui.ttf", 34f, "alarmPanel alarm title");
         largeAlarmIconFont = CreateDalamudIconFontHandle(48f, "large alarm icon");

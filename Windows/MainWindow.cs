@@ -20,6 +20,9 @@ public class MainWindow : Window, IDisposable
     private const string LocalColonText = ":";
     private const float LocalMinuteDigitGap = 0.15f;
     private const float LocalColonSideTighten = -2.0f;
+    private const float TechHourTextOffsetX = 11.0f;
+    private const float TechColonTextOffsetX = -7.0f;
+    private const float TechBadgeOffsetX = 6.0f;
     private const float SeparateLocalPanelGap = 4.0f;
     private const float InvisibleWindowPadding = 16.0f;
     private const float MainPanelExtraSize = 5.5f;
@@ -116,7 +119,9 @@ public class MainWindow : Window, IDisposable
 
         var styleMetrics = GetStyleMetrics(profile.DisplayStyle);
         var mainScale = GetMainScale(profile, styleMetrics);
-        var badgeScale = MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
+        var badgeScale = profile.DisplayStyle == ClockDisplayStyle.Countdown
+            ? GetCountdownSuffixScale(mainScale)
+            : MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
 
         var parts = GetClockParts();
         var badgeText = GetMainBadgeText();
@@ -241,7 +246,9 @@ public class MainWindow : Window, IDisposable
             var lineStyle = GetStyleMetrics(line.DisplayStyle);
             var shadow = line.ShowShadowText ? line.ShadowColor : new Vector4(0, 0, 0, 0);
             var labelScale = GetOverlayLabelScale(profile, line.Scale);
-            var labelSize = CalculateClockTextSize(line.Label, labelScale);
+            Vector2 labelSize;
+            using (PushPresetAuxFont(profile))
+                labelSize = CalculateScaledTextSize(line.Label, labelScale);
             var timeScale = GetClockFontTimeScale(profile, line.Scale);
             var isTimeRun = IsDigitalClockRun(line.TimeText);
             Vector2 timeSize;
@@ -255,7 +262,10 @@ public class MainWindow : Window, IDisposable
             var timePos = new Vector2(lineX + labelSize.X, cursorY - line.VerticalOffset + MathF.Floor((lineHeight - timeSize.Y) * 0.5f));
 
             if (!string.IsNullOrEmpty(line.Label))
-                DrawClockTextScaledOnList(drawList, line.Label, labelPos, labelScale, line.TextColor, shadow, lineStyle);
+            {
+                using (PushPresetAuxFont(profile))
+                    DrawOutlinedTextScaledOnList(drawList, line.Label, labelPos, labelScale, line.TextColor, shadow, lineStyle);
+            }
 
             using (plugin.PushClockTimeFont(GetFontForClockText(profile, line.TimeText)))
             {
@@ -362,10 +372,32 @@ public class MainWindow : Window, IDisposable
             : GetClockFontTimeScale(profile, scale);
     }
 
+    private static bool UsesPresetAuxFont(ClockProfile profile)
+    {
+        return profile.DisplayStyle is ClockDisplayStyle.Tech or ClockDisplayStyle.Countdown;
+    }
+
+    private static ClockTimeTextFont GetPresetAuxFont(ClockProfile profile)
+    {
+        return UsesPresetAuxFont(profile) ? ClockTimeTextFont.Digital : profile.TimeTextFont;
+    }
+
+    private IDisposable PushPresetAuxFont(ClockProfile profile)
+    {
+        return plugin.PushClockTimeFont(GetPresetAuxFont(profile));
+    }
+
+    private static float GetMainColonSideTighten(ClockProfile profile)
+    {
+        return profile.DisplayStyle == ClockDisplayStyle.Tech ? 3.0f : 0.0f;
+    }
+
     private Vector2 GetOverlayLineSize(ClockProfile profile, OverlayLine line)
     {
         var labelScale = GetOverlayLabelScale(profile, line.Scale);
-        var labelSize = CalculateClockTextSize(line.Label, labelScale);
+        Vector2 labelSize;
+        using (PushPresetAuxFont(profile))
+            labelSize = CalculateScaledTextSize(line.Label, labelScale);
         var timeScale = GetClockFontTimeScale(profile, line.Scale);
         Vector2 timeSize;
         var isTimeRun = IsDigitalClockRun(line.TimeText);
@@ -796,8 +828,7 @@ public class MainWindow : Window, IDisposable
             var fullPos = new Vector2(
                 centerStartX + MathF.Floor((centerLineWidth - localLayout.TimeLayout.TotalSize.X) * 0.5f),
                 contentY + MathF.Floor((localLayout.ContentSize.Y - localLayout.TimeLayout.TotalSize.Y) * 0.5f));
-            using (plugin.PushClockTimeFont(profile.TimeTextFont))
-                DrawOutlinedTextScaled(localLayout.Parts.FullText, fullPos - windowPos, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
+            DrawClockTextScaled(localLayout.Parts.FullText, fullPos - windowPos, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
             return;
         }
 
@@ -805,7 +836,7 @@ public class MainWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(localLayout.Parts.Prefix))
         {
             DrawCenteredLineCustom(localLayout.Parts.Prefix, centerStartX, centerLineWidth, timeStartY, localLayout.Scale, profile.LocalTimeTextColor, shadowColor, styleMetrics);
-            timeStartY += CalculateScaledTextSize(localLayout.Parts.Prefix, localLayout.Scale).Y + MathF.Max(2f, 2f * localLayout.Scale);
+            timeStartY += CalculateClockTextSize(localLayout.Parts.Prefix, localLayout.Scale).Y + MathF.Max(2f, 2f * localLayout.Scale);
         }
 
         var leftDigits = GetVerticalLeftLines(localLayout.Parts.Left);
@@ -823,7 +854,8 @@ public class MainWindow : Window, IDisposable
         }
         else
         {
-            DrawVerticalStackedText(localLayout.LabelText, contentX, localLayout.LabelColumnWidth, labelStartY, localLayout.BadgeScale, profile.LocalTimeTextColor, shadowColor, styleMetrics, windowPos);
+            using (PushPresetAuxFont(profile))
+                DrawVerticalStackedText(localLayout.LabelText, contentX, localLayout.LabelColumnWidth, labelStartY, localLayout.BadgeScale, profile.LocalTimeTextColor, shadowColor, styleMetrics, windowPos);
         }
 
         using (plugin.PushClockTimeFont(profile.TimeTextFont))
@@ -859,6 +891,16 @@ public class MainWindow : Window, IDisposable
             return 6.0f;
 
         return styleMetrics.DigitalPanel ? 4.0f : 0.0f;
+    }
+
+    private static float GetHorizontalBadgeOffsetX(ClockProfile profile)
+    {
+        return profile.DisplayStyle == ClockDisplayStyle.Tech ? TechBadgeOffsetX : 0.0f;
+    }
+
+    private static float GetHorizontalBadgeOverflow(ClockProfile profile)
+    {
+        return MathF.Abs(GetHorizontalBadgeOffsetX(profile));
     }
 
     private static Vector2 GetVerticalPresetBadgeOffset(ClockProfile profile, StyleMetrics styleMetrics)
@@ -904,9 +946,14 @@ public class MainWindow : Window, IDisposable
             var digitGap = MathF.Max(2f, 3f * scale);
             var groupGap = GetCountdownColonGap(scale);
             var colonScale = GetCountdownColonScale(scale);
-            var colonW = CalculateScaledTextSize(LocalColonText, colonScale).X;
+            float colonW;
+            float labelH;
             var labelScale = GetCountdownLabelScale(scale);
-            var labelH = CalculateScaledTextSize("MINS", labelScale).Y;
+            using (PushPresetAuxFont(profile))
+            {
+                colonW = CalculateScaledTextSize(LocalColonText, colonScale).X;
+                labelH = CalculateScaledTextSize("MINS", labelScale).Y;
+            }
             var groups = GetCountdownGroups(parts, parts);
             var width = 0f;
 
@@ -917,14 +964,22 @@ public class MainWindow : Window, IDisposable
 
                 var group = groups[groupIndex];
                 var cardsWidth = group.Text.Length * cardW + MathF.Max(0, group.Text.Length - 1) * digitGap;
-                var labelWidth = CalculateScaledTextSize(group.Label, labelScale).X;
+                float labelWidth;
+                using (PushPresetAuxFont(profile))
+                    labelWidth = CalculateScaledTextSize(group.Label, labelScale).X;
                 width += MathF.Max(cardsWidth, labelWidth);
             }
 
             if (!string.IsNullOrWhiteSpace(parts.Prefix))
-                width += CalculateScaledTextSize(parts.Prefix + " ", GetCountdownSuffixScale(scale)).X;
+            {
+                using (PushPresetAuxFont(profile))
+                    width += CalculateScaledTextSize(parts.Prefix + " ", GetCountdownSuffixScale(scale)).X;
+            }
             if (!string.IsNullOrWhiteSpace(parts.Suffix))
-                width += GetCountdownColonGap(scale) * 0.35f + GetCountdownTextPlateSize(parts.Suffix.ToUpperInvariant(), GetCountdownSuffixScale(scale), GetStyleMetrics(profile.DisplayStyle)).X;
+            {
+                using (PushPresetAuxFont(profile))
+                    width += GetCountdownColonGap(scale) * 0.35f + GetCountdownTextPlateSize(parts.Suffix.ToUpperInvariant(), GetCountdownSuffixScale(scale), GetStyleMetrics(profile.DisplayStyle)).X;
+            }
 
             return new Vector2(width, cardH + labelH + MathF.Max(4f, 5f * scale));
         }
@@ -939,8 +994,10 @@ public class MainWindow : Window, IDisposable
             var cardH = GetCountdownCardHeight(digit, mainScale);
             var lineGap = MathF.Max(3f, 4f * mainScale);
             var colonScale = GetCountdownColonScale(mainScale);
-            var colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
+            Vector2 colonSize;
             var labelScale = GetCountdownLabelScale(mainScale);
+            using (PushPresetAuxFont(profile))
+                colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
             var suffixScale = GetCountdownSuffixScale(mainScale);
             var groups = GetCountdownGroups(parts, parts);
 
@@ -948,7 +1005,10 @@ public class MainWindow : Window, IDisposable
             var height = 0f;
 
             if (!string.IsNullOrWhiteSpace(parts.Prefix))
-                height += CalculateScaledTextSize(parts.Prefix, suffixScale).Y + lineGap;
+            {
+                using (PushPresetAuxFont(profile))
+                    height += CalculateScaledTextSize(parts.Prefix, suffixScale).Y + lineGap;
+            }
 
             for (var groupIndex = 0; groupIndex < groups.Count; groupIndex++)
             {
@@ -956,7 +1016,9 @@ public class MainWindow : Window, IDisposable
                     height += colonSize.Y + lineGap;
 
                 var group = groups[groupIndex];
-                var labelSize = CalculateScaledTextSize(group.Label, labelScale);
+                Vector2 labelSize;
+                using (PushPresetAuxFont(profile))
+                    labelSize = CalculateScaledTextSize(group.Label, labelScale);
                 width = MathF.Max(width, labelSize.X);
                 height += group.Text.Length * cardH + MathF.Max(0, group.Text.Length - 1) * lineGap;
                 height += MathF.Max(2f, 3f * mainScale) + labelSize.Y + lineGap;
@@ -964,7 +1026,9 @@ public class MainWindow : Window, IDisposable
 
             if (!string.IsNullOrWhiteSpace(parts.Suffix))
             {
-                var suffixPlate = GetCountdownTextPlateSize(parts.Suffix.ToUpperInvariant(), suffixScale, styleMetrics);
+                Vector2 suffixPlate;
+                using (PushPresetAuxFont(profile))
+                    suffixPlate = GetCountdownTextPlateSize(parts.Suffix.ToUpperInvariant(), suffixScale, styleMetrics);
                 width = MathF.Max(width, suffixPlate.X);
                 height += suffixPlate.Y + lineGap;
             }
@@ -972,7 +1036,7 @@ public class MainWindow : Window, IDisposable
             if (profile.ShowIcon)
             {
                 var badgeRotatedWidth = GetBadgeVerticalWidth(badgeTextSize, styleMetrics);
-                var badgeRotatedHeight = GetBadgeVerticalHeight(badgeTextSize, styleMetrics, GetMainBadgeText(), badgeScale);
+                var badgeRotatedHeight = GetBadgeVerticalHeight(profile, badgeTextSize, styleMetrics, GetMainBadgeText(), badgeScale);
                 width += badgeRotatedWidth + styleMetrics.BadgeGap;
                 height = MathF.Max(height, badgeRotatedHeight);
             }
@@ -1103,8 +1167,11 @@ public class MainWindow : Window, IDisposable
             if (!string.IsNullOrWhiteSpace(parts.Prefix))
             {
                 var prefix = parts.Prefix + " ";
-                DrawOutlinedTextScaled(prefix, new Vector2(x, startY + cardH * 0.22f) - windowPos, suffixScale, textColor, shadow, styleMetrics);
-                x += CalculateScaledTextSize(prefix, suffixScale).X;
+                using (PushPresetAuxFont(profile))
+                {
+                    DrawOutlinedTextScaled(prefix, new Vector2(x, startY + cardH * 0.22f) - windowPos, suffixScale, textColor, shadow, styleMetrics);
+                    x += CalculateScaledTextSize(prefix, suffixScale).X;
+                }
             }
 
             var progress = GetCountdownFlipProgress();
@@ -1113,16 +1180,23 @@ public class MainWindow : Window, IDisposable
                 if (groupIndex > 0)
                 {
                     x += groupGap;
-                    var colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
+                    Vector2 colonSize;
+                    using (PushPresetAuxFont(profile))
+                        colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
                     var colonPos = new Vector2(x, startY + MathF.Floor((cardH - colonSize.Y) * 0.48f));
                     if (ShouldShowColon(plugin.Configuration.ColonAnimation))
-                        DrawCountdownColon(drawList, LocalColonText, colonPos, colonScale * 1.08f, textColor, shadow, styleMetrics);
+                    {
+                        using (PushPresetAuxFont(profile))
+                            DrawCountdownColon(drawList, LocalColonText, colonPos, colonScale * 1.08f, textColor, shadow, styleMetrics);
+                    }
                     x += colonSize.X + groupGap;
                 }
 
                 var group = groups[groupIndex];
                 var cardsWidth = group.Text.Length * cardW + MathF.Max(0, group.Text.Length - 1) * digitGap;
-                var labelSize = CalculateScaledTextSize(group.Label, labelScale);
+                Vector2 labelSize;
+                using (PushPresetAuxFont(profile))
+                    labelSize = CalculateScaledTextSize(group.Label, labelScale);
                 var groupWidth = MathF.Max(cardsWidth, labelSize.X);
                 var digitX = x + MathF.Floor((groupWidth - cardsWidth) * 0.5f);
 
@@ -1135,16 +1209,20 @@ public class MainWindow : Window, IDisposable
                 }
 
                 var labelPos = new Vector2(x + MathF.Floor((groupWidth - labelSize.X) * 0.5f), startY + cardH + labelGap);
-                DrawOutlinedTextScaled(group.Label, labelPos - windowPos, labelScale, textColor, shadow, styleMetrics);
+                using (PushPresetAuxFont(profile))
+                    DrawOutlinedTextScaled(group.Label, labelPos - windowPos, labelScale, textColor, shadow, styleMetrics);
                 x += groupWidth;
             }
 
             if (!string.IsNullOrWhiteSpace(parts.Suffix))
             {
                 var suffixText = parts.Suffix.ToUpperInvariant();
-                var plateSize = GetCountdownTextPlateSize(suffixText, suffixScale, styleMetrics);
+                Vector2 plateSize;
+                using (PushPresetAuxFont(profile))
+                    plateSize = GetCountdownTextPlateSize(suffixText, suffixScale, styleMetrics);
                 var plateMin = new Vector2(x + groupGap * 0.35f, startY + MathF.Floor((cardH - plateSize.Y) * 0.5f));
-                DrawCountdownPlateText(profile, drawList, suffixText, plateMin, plateMin + plateSize, suffixScale, textColor, shadow, styleMetrics);
+                using (PushPresetAuxFont(profile))
+                    DrawCountdownPlateText(profile, drawList, suffixText, plateMin, plateMin + plateSize, suffixScale, textColor, shadow, styleMetrics);
             }
         }
     }
@@ -1175,7 +1253,7 @@ public class MainWindow : Window, IDisposable
         var contentY = panelPos.Y + MathF.Floor((panelSize.Y - contentSize.Y) * 0.5f) + GetTechTextVerticalOffset(profile, styleMetrics);
 
         var badgeRotatedWidth = profile.ShowIcon ? GetBadgeVerticalWidth(badgeTextSize, styleMetrics) : 0f;
-        var badgeRotatedHeight = profile.ShowIcon ? GetBadgeVerticalHeight(badgeTextSize, styleMetrics, badgeText, badgeScale) : 0f;
+        var badgeRotatedHeight = profile.ShowIcon ? GetBadgeVerticalHeight(profile, badgeTextSize, styleMetrics, badgeText, badgeScale) : 0f;
         var columnX = contentX + (profile.ShowIcon ? badgeRotatedWidth + styleMetrics.BadgeGap : 0f);
         var columnW = contentSize.X - (profile.ShowIcon ? badgeRotatedWidth + styleMetrics.BadgeGap : 0f);
 
@@ -1205,8 +1283,12 @@ public class MainWindow : Window, IDisposable
 
             if (!string.IsNullOrWhiteSpace(parts.Prefix))
             {
-                var prefixSize = CalculateScaledTextSize(parts.Prefix, suffixScale);
-                DrawOutlinedTextScaled(parts.Prefix, new Vector2(columnX + MathF.Floor((columnW - prefixSize.X) * 0.5f), y) - windowPos, suffixScale, textColor, shadow, styleMetrics);
+                Vector2 prefixSize;
+                using (PushPresetAuxFont(profile))
+                {
+                    prefixSize = CalculateScaledTextSize(parts.Prefix, suffixScale);
+                    DrawOutlinedTextScaled(parts.Prefix, new Vector2(columnX + MathF.Floor((columnW - prefixSize.X) * 0.5f), y) - windowPos, suffixScale, textColor, shadow, styleMetrics);
+                }
                 y += prefixSize.Y + lineGap;
             }
 
@@ -1216,9 +1298,14 @@ public class MainWindow : Window, IDisposable
                 if (groupIndex > 0)
                 {
                     var colonVisible = ShouldShowColon(plugin.Configuration.ColonAnimation);
-                    var colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
+                    Vector2 colonSize;
+                    using (PushPresetAuxFont(profile))
+                        colonSize = CalculateScaledTextSize(LocalColonText, colonScale);
                     if (colonVisible)
-                        DrawCountdownColon(drawList, LocalColonText, new Vector2(columnX + MathF.Floor((columnW - colonSize.X) * 0.5f), y), colonScale * 1.08f, textColor, shadow, styleMetrics);
+                    {
+                        using (PushPresetAuxFont(profile))
+                            DrawCountdownColon(drawList, LocalColonText, new Vector2(columnX + MathF.Floor((columnW - colonSize.X) * 0.5f), y), colonScale * 1.08f, textColor, shadow, styleMetrics);
+                    }
                     y += colonSize.Y + lineGap;
                 }
 
@@ -1232,8 +1319,11 @@ public class MainWindow : Window, IDisposable
                     y += cardH + lineGap;
                 }
 
-                var labelSize = CalculateScaledTextSize(group.Label, labelScale);
-                DrawOutlinedTextScaled(group.Label, new Vector2(columnX + MathF.Floor((columnW - labelSize.X) * 0.5f), y + labelGap - lineGap) - windowPos, labelScale, textColor, shadow, styleMetrics);
+                Vector2 labelSize;
+                using (PushPresetAuxFont(profile))
+                    labelSize = CalculateScaledTextSize(group.Label, labelScale);
+                using (PushPresetAuxFont(profile))
+                    DrawOutlinedTextScaled(group.Label, new Vector2(columnX + MathF.Floor((columnW - labelSize.X) * 0.5f), y + labelGap - lineGap) - windowPos, labelScale, textColor, shadow, styleMetrics);
                 y += labelGap + labelSize.Y;
             }
 
@@ -1241,9 +1331,12 @@ public class MainWindow : Window, IDisposable
             {
                 y += lineGap;
                 var suffixText = parts.Suffix.ToUpperInvariant();
-                var plateSize = GetCountdownTextPlateSize(suffixText, suffixScale, styleMetrics);
+                Vector2 plateSize;
+                using (PushPresetAuxFont(profile))
+                    plateSize = GetCountdownTextPlateSize(suffixText, suffixScale, styleMetrics);
                 var plateMin = new Vector2(columnX + MathF.Floor((columnW - plateSize.X) * 0.5f), y);
-                DrawCountdownPlateText(profile, drawList, suffixText, plateMin, plateMin + plateSize, suffixScale, textColor, shadow, styleMetrics);
+                using (PushPresetAuxFont(profile))
+                    DrawCountdownPlateText(profile, drawList, suffixText, plateMin, plateMin + plateSize, suffixScale, textColor, shadow, styleMetrics);
             }
         }
     }
@@ -1283,7 +1376,7 @@ public class MainWindow : Window, IDisposable
         var textSize = CalculateScaledTextSize(text, scale);
         var textPos = new Vector2(
             min.X + (((max.X - min.X) - textSize.X) * 0.5f),
-            min.Y + (((max.Y - min.Y) - textSize.Y) * 0.5f) - MathF.Max(0.45f, scale * 0.55f));
+            min.Y + (((max.Y - min.Y) - textSize.Y) * 0.5f));
 
         DrawCountdownPlate(profile, drawList, min, max, styleMetrics.BadgeRounding, styleMetrics, badgePlate);
         DrawOutlinedTextScaledOnList(drawList, text, textPos, scale, textColor, shadow, GetBadgeTextShadowMetrics(styleMetrics));
@@ -1397,7 +1490,7 @@ public class MainWindow : Window, IDisposable
         if (profile.ShowIcon)
         {
             var badgeMin = new Vector2(
-                currentX,
+                currentX + GetHorizontalBadgeOffsetX(profile),
                 contentTop + MathF.Floor((contentHeight - badgeHeight) * 0.5f) + styleMetrics.BadgeVerticalOffset
             );
 
@@ -1407,7 +1500,7 @@ public class MainWindow : Window, IDisposable
             );
 
             DrawBadge(profile, styleMetrics, badgeText, badgeScale, badgeMin, badgeMax, windowPos);
-            currentX = badgeMax.X + styleMetrics.BadgeGap;
+            currentX += badgeWidth + styleMetrics.BadgeGap;
         }
 
         var timePos = new Vector2(
@@ -1448,7 +1541,7 @@ public class MainWindow : Window, IDisposable
             lineHeight = CalculateScaledTextSize("8", mainScale).Y;
 
         float badgeRotatedWidth = profile.ShowIcon ? GetBadgeVerticalWidth(badgeTextSize, styleMetrics) : 0f;
-        float badgeRotatedHeight = profile.ShowIcon ? GetBadgeVerticalHeight(badgeTextSize, styleMetrics, badgeText, badgeScale) : 0f;
+        float badgeRotatedHeight = profile.ShowIcon ? GetBadgeVerticalHeight(profile, badgeTextSize, styleMetrics, badgeText, badgeScale) : 0f;
         float fullWidth = badgeRotatedWidth + (badgeRotatedWidth > 0 ? styleMetrics.BadgeGap : 0f) + layout.TotalSize.X;
 
         var contentHorizontalShift = GetMainContentHorizontalShift(profile, styleMetrics);
@@ -1461,8 +1554,7 @@ public class MainWindow : Window, IDisposable
             var fullPos = new Vector2(
                 panelPos.X + MathF.Floor((panelSize.X - layout.TotalSize.X) * 0.5f) + contentHorizontalShift,
                 panelPos.Y + MathF.Floor((panelSize.Y - layout.TotalSize.Y) * 0.5f));
-            using (plugin.PushClockTimeFont(profile.TimeTextFont))
-                DrawOutlinedTextScaled(parts.FullText, fullPos - windowPos, mainScale, GetMainClockTextColor(profile), profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0), styleMetrics);
+            DrawClockTextScaled(parts.FullText, fullPos - windowPos, mainScale, GetMainClockTextColor(profile), profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0), styleMetrics);
             return;
         }
 
@@ -1472,7 +1564,7 @@ public class MainWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(parts.Prefix))
         {
             DrawCenteredLineCustom(parts.Prefix, centerStartX, centerLineWidth, startY, mainScale, GetMainClockTextColor(profile), shadow, styleMetrics);
-            startY += CalculateScaledTextSize(parts.Prefix, mainScale).Y + MathF.Max(2f, 2f * mainScale);
+            startY += CalculateClockTextSize(parts.Prefix, mainScale).Y + MathF.Max(2f, 2f * mainScale);
         }
 
         var leftDigits = GetVerticalLeftLines(parts.Left);
@@ -1518,7 +1610,7 @@ public class MainWindow : Window, IDisposable
 
     private Vector2 CalculateMainBadgeTextSize(ClockProfile profile, string badgeText, float badgeScale)
     {
-        using (plugin.PushClockTimeFont(profile.TimeTextFont))
+        using (PushPresetAuxFont(profile))
             return CalculateScaledTextSize(badgeText, badgeScale);
     }
 
@@ -1529,11 +1621,14 @@ public class MainWindow : Window, IDisposable
         return badgeTextSize.Y + (styleMetrics.BadgePaddingX * 2.0f);
     }
 
-    private static float GetBadgeVerticalHeight(Vector2 badgeTextSize, StyleMetrics styleMetrics, string badgeText, float badgeScale)
+    private float GetBadgeVerticalHeight(ClockProfile profile, Vector2 badgeTextSize, StyleMetrics styleMetrics, string badgeText, float badgeScale)
     {
         float totalLetterHeight = 0f;
-        foreach (var letter in badgeText)
-            totalLetterHeight += ImGui.CalcTextSize(letter.ToString()).Y * badgeScale;
+        using (PushPresetAuxFont(profile))
+        {
+            foreach (var letter in badgeText)
+                totalLetterHeight += ImGui.CalcTextSize(letter.ToString()).Y * badgeScale;
+        }
 
         return totalLetterHeight + (styleMetrics.BadgePaddingY * 2.0f) + 2.0f;
     }
@@ -1558,7 +1653,7 @@ public class MainWindow : Window, IDisposable
     {
         var activeProfile = plugin.Configuration.GetActiveProfile();
         var isDigitalTime = IsSegmentFont(activeProfile.TimeTextFont) && IsDigitalClockRun(text);
-        var fontForText = isDigitalTime || activeProfile.TimeTextFont != ClockTimeTextFont.Default
+        var fontForText = isDigitalTime || activeProfile.TimeTextFont != ClockTimeTextFont.Default || UsesPresetAuxFont(activeProfile)
             ? GetFontForClockText(activeProfile, text)
             : ClockTimeTextFont.Default;
         var textStyle = IsDigitalClockRun(text) ? GetTimeTextMetrics(activeProfile, styleMetrics) : styleMetrics;
@@ -1607,7 +1702,7 @@ public class MainWindow : Window, IDisposable
     {
         var activeProfile = plugin.Configuration.GetActiveProfile();
         var isDigitalTime = IsSegmentFont(activeProfile.TimeTextFont) && IsDigitalClockRun(text);
-        var fontForText = isDigitalTime || activeProfile.TimeTextFont != ClockTimeTextFont.Default
+        var fontForText = isDigitalTime || activeProfile.TimeTextFont != ClockTimeTextFont.Default || UsesPresetAuxFont(activeProfile)
             ? GetFontForClockText(activeProfile, text)
             : ClockTimeTextFont.Default;
         var textStyle = IsDigitalClockRun(text) ? GetTimeTextMetrics(activeProfile, styleMetrics) : styleMetrics;
@@ -1857,7 +1952,7 @@ public class MainWindow : Window, IDisposable
 
         if (styleMetrics.CountdownPanel)
         {
-            using (plugin.PushClockTimeFont(profile.TimeTextFont))
+            using (PushPresetAuxFont(profile))
             {
                 DrawCountdownPlateText(profile, drawList, badgeText, badgeMin, badgeMax, badgeScale, GetMainBadgeTextColor(profile), profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0), styleMetrics, true);
             }
@@ -1882,7 +1977,7 @@ public class MainWindow : Window, IDisposable
             badgeMin.Y + styleMetrics.BadgePaddingY
         );
 
-        using (plugin.PushClockTimeFont(profile.TimeTextFont))
+        using (PushPresetAuxFont(profile))
         {
             if (styleMetrics.TechPanel)
                 DrawOutlinedTextScaled(badgeText, badgeTextPos - windowPos, badgeScale, GetMainBadgeTextColor(profile), profile.ShowShadowText ? profile.ClockShadowColor : new Vector4(0, 0, 0, 0), GetBadgeTextShadowMetrics(styleMetrics));
@@ -1920,7 +2015,7 @@ public class MainWindow : Window, IDisposable
             badgeMin.Y + styleMetrics.BadgePaddingY
         );
 
-        using (plugin.PushClockTimeFont(profile.TimeTextFont))
+        using (PushPresetAuxFont(profile))
             DrawTextScaled(badgeText, badgeTextPos - windowPos, badgeScale, profile.LocalTimeIconTextColor);
     }
 
@@ -1952,7 +2047,7 @@ public class MainWindow : Window, IDisposable
         if (letters.Length == 0)
             return;
 
-        using (plugin.PushClockTimeFont(profile.TimeTextFont))
+        using (PushPresetAuxFont(profile))
         {
             float totalHeight = 0f;
             foreach (var letter in letters)
@@ -1995,7 +2090,7 @@ public class MainWindow : Window, IDisposable
             if (countdownLetters.Length == 0)
                 return;
 
-            using (plugin.PushClockTimeFont(profile.TimeTextFont))
+            using (PushPresetAuxFont(profile))
             {
                 float totalHeight = 0f;
                 foreach (var letter in countdownLetters)
@@ -2035,7 +2130,7 @@ public class MainWindow : Window, IDisposable
         if (letters.Length == 0)
             return;
 
-        using (plugin.PushClockTimeFont(profile.TimeTextFont))
+        using (PushPresetAuxFont(profile))
         {
             float totalHeight = 0f;
             foreach (var letter in letters)
@@ -2070,14 +2165,14 @@ public class MainWindow : Window, IDisposable
     private float GetSuffixHorizontalOffset(ClockProfile profile, float scale)
     {
         if (profile.DisplayStyle == ClockDisplayStyle.Tech)
-            return 1.65f * scale;
+            return (1.65f * scale) - 2.0f;
 
         return (ShouldUseDigitalSuffix(profile) ? 1.05f : SuffixHorizontalOffset) * scale;
     }
 
     private float GetSuffixVerticalOffset(ClockProfile profile)
     {
-        return profile.DisplayStyle == ClockDisplayStyle.Tech || ShouldUseDigitalSuffix(profile) ? 1.0f : 0.0f;
+        return profile.DisplayStyle == ClockDisplayStyle.Tech ? -1.0f : ShouldUseDigitalSuffix(profile) ? 1.0f : 0.0f;
     }
 
     private static float GetTechTextVerticalOffset(ClockProfile profile, StyleMetrics styleMetrics)
@@ -2101,7 +2196,7 @@ public class MainWindow : Window, IDisposable
         if (string.IsNullOrWhiteSpace(text))
             return Vector2.Zero;
 
-        using (plugin.PushClockTimeFont(ShouldUseDigitalSuffix(profile) ? profile.TimeTextFont : ClockTimeTextFont.Default))
+        using (plugin.PushClockTimeFont(ShouldUseDigitalSuffix(profile) ? GetPresetAuxFont(profile) : ClockTimeTextFont.Default))
             return CalculateScaledTextSize(text, scale);
     }
 
@@ -2109,7 +2204,10 @@ public class MainWindow : Window, IDisposable
     {
         var drawPos = new Vector2(pos.X, pos.Y + GetSuffixVerticalOffset(profile));
         if (ShouldUseDigitalSuffix(profile))
-            DrawClockTextScaled(text, drawPos, scale, color, shadow, styleMetrics);
+        {
+            using (PushPresetAuxFont(profile))
+                DrawOutlinedTextScaled(text, drawPos, scale, color, shadow, styleMetrics);
+        }
         else
         {
             using (plugin.PushClockTimeFont(ClockTimeTextFont.Default))
@@ -2125,7 +2223,8 @@ public class MainWindow : Window, IDisposable
         Vector4 shadow,
         StyleMetrics styleMetrics)
     {
-        DrawClockHorizontal(parts, basePos, scale, color, shadow, styleMetrics, ColonText, MinuteDigitGap, 0.0f);
+        var profile = plugin.Configuration.GetActiveProfile();
+        DrawClockHorizontal(parts, basePos, scale, color, shadow, styleMetrics, ColonText, MinuteDigitGap, GetMainColonSideTighten(profile));
     }
 
     private void DrawClockHorizontal(
@@ -2195,13 +2294,18 @@ public class MainWindow : Window, IDisposable
             var leftSlotText = digitalSlots ? GetDigitalSlotText(parts.Left, 2) : parts.Left;
             var leftSlotSize = digitalSlots ? CalculateScaledTextSize(leftSlotText, scale) : leftSize;
             var leftDrawX = x + MathF.Max(0f, leftSlotSize.X - leftSize.X);
+            if (profile.DisplayStyle == ClockDisplayStyle.Tech)
+                leftDrawX += TechHourTextOffsetX;
 
             if (digitalSlots)
                 DrawOutlinedTextScaled(leftSlotText, new Vector2(x, basePos.Y), scale, inactiveColor, new Vector4(0f, 0f, 0f, 0f), inactiveStyle);
 
             DrawOutlinedTextScaled(parts.Left, new Vector2(leftDrawX, basePos.Y), scale, color, activeShadow, textStyle);
 
-            var colonPos = new Vector2(x + leftSlotSize.X - colonSideTighten, basePos.Y);
+            var colonX = x + leftSlotSize.X - colonSideTighten;
+            if (profile.DisplayStyle == ClockDisplayStyle.Tech)
+                colonX += TechColonTextOffsetX;
+            var colonPos = new Vector2(colonX, basePos.Y);
             if (profile.TimeTextFont == ClockTimeTextFont.Ka1)
             {
                 DrawCartoonColon(colonPos + cartoonColonOffset, scale, colonColor, activeColonShadow, textStyle);
@@ -2233,6 +2337,8 @@ public class MainWindow : Window, IDisposable
             if (parts.HasSeconds)
             {
                 var secondsColonX = x - (colonSideTighten * scale);
+                if (profile.DisplayStyle == ClockDisplayStyle.Tech)
+                    secondsColonX += TechColonTextOffsetX;
                 var secondsColonPos = new Vector2(secondsColonX, basePos.Y);
                 if (profile.TimeTextFont == ClockTimeTextFont.Ka1)
                 {
@@ -2492,14 +2598,21 @@ public class MainWindow : Window, IDisposable
 
     private static bool ShouldDrawMixedClockText(ClockProfile profile, string text)
     {
-        return (profile.TimeTextFont == ClockTimeTextFont.Ka1 || profile.TimeTextFont == ClockTimeTextFont.Countdown) && !string.IsNullOrEmpty(text) && text.Contains(':');
+        return (profile.TimeTextFont == ClockTimeTextFont.Ka1 || UsesPresetAuxFont(profile)) && !string.IsNullOrEmpty(text) && text.Contains(':');
     }
 
     private static ClockTimeTextFont GetFontForClockText(ClockProfile profile, string text)
     {
-        return profile.TimeTextFont == ClockTimeTextFont.Ka1 && IsColonOnlyText(text)
-            ? ClockTimeTextFont.Default
-            : profile.TimeTextFont;
+        if (profile.TimeTextFont == ClockTimeTextFont.Ka1 && IsColonOnlyText(text))
+            return ClockTimeTextFont.Default;
+
+        if (profile.DisplayStyle == ClockDisplayStyle.Countdown && IsColonOnlyText(text))
+            return ClockTimeTextFont.Digital;
+
+        if (UsesPresetAuxFont(profile) && !IsDigitalClockRun(text))
+            return ClockTimeTextFont.Digital;
+
+        return profile.TimeTextFont;
     }
 
     private static float GetCountdownInlineColonPadding(ClockProfile profile, float scale)
@@ -2755,7 +2868,9 @@ public class MainWindow : Window, IDisposable
     {
         var styleMetrics = GetStyleMetrics(profile.DisplayStyle);
         var mainScale = GetMainScale(profile, styleMetrics);
-        var badgeScale = MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
+        var badgeScale = profile.DisplayStyle == ClockDisplayStyle.Countdown
+            ? GetCountdownSuffixScale(mainScale)
+            : MathF.Max(0.35f, mainScale * styleMetrics.BadgeScaleMultiplier);
 
         var parts = GetClockParts();
         var badgeText = GetMainBadgeText();
@@ -2783,7 +2898,7 @@ public class MainWindow : Window, IDisposable
             var horizontalExtra = MathF.Max(0.0f, GetMainContentHorizontalShift(profile, styleMetrics));
 
             return new Vector2(
-                iconWidth + gapWidth + layout.TotalSize.X + MainPanelExtraSize + 1.0f + horizontalExtra + cartoonWidthExtra,
+                iconWidth + gapWidth + layout.TotalSize.X + GetHorizontalBadgeOverflow(profile) + MainPanelExtraSize + 1.0f + horizontalExtra + cartoonWidthExtra,
                 contentHeight + MainPanelExtraSize + techHeightExtra + cartoonHeightExtra
             );
         }
@@ -2818,10 +2933,10 @@ public class MainWindow : Window, IDisposable
             if (profile.LocalTimeShowIcon)
             {
                 Vector2 badgeTextSize;
-                using (plugin.PushClockTimeFont(profile.TimeTextFont))
+                using (PushPresetAuxFont(profile))
                     badgeTextSize = CalculateScaledTextSize(badgeText, badgeScale);
                 var labelColumnWidth = GetBadgeVerticalWidth(badgeTextSize, styleMetrics);
-                var labelTextHeight = GetBadgeVerticalHeight(badgeTextSize, styleMetrics, badgeText, badgeScale);
+                var labelTextHeight = GetBadgeVerticalHeight(profile, badgeTextSize, styleMetrics, badgeText, badgeScale);
                 var contentHeight = MathF.Max(timeLayout.TotalSize.Y, labelTextHeight);
                 var contentWidth = labelColumnWidth + (labelColumnWidth > 0 ? styleMetrics.BadgeGap : 0f) + timeLayout.TotalSize.X;
 
@@ -2847,8 +2962,13 @@ public class MainWindow : Window, IDisposable
             }
 
             const string labelText = "LT";
-            var plainTextHeight = GetBadgeVerticalTextHeight(labelText, badgeScale);
-            var plainTextWidth = MathF.Max(CalculateScaledTextSize("L", badgeScale).X, CalculateScaledTextSize("T", badgeScale).X);
+            float plainTextHeight;
+            float plainTextWidth;
+            using (PushPresetAuxFont(profile))
+            {
+                plainTextHeight = GetBadgeVerticalTextHeight(labelText, badgeScale);
+                plainTextWidth = MathF.Max(CalculateScaledTextSize("L", badgeScale).X, CalculateScaledTextSize("T", badgeScale).X);
+            }
             var contentHeightPlain = MathF.Max(timeLayout.TotalSize.Y, plainTextHeight);
             var contentWidthPlain = plainTextWidth + (plainTextWidth > 0 ? styleMetrics.BadgeGap : 0f) + timeLayout.TotalSize.X;
 
@@ -2879,7 +2999,7 @@ public class MainWindow : Window, IDisposable
         {
             var badgeScale = MathF.Max(0.35f, scale * styleMetrics.BadgeScaleMultiplier);
             Vector2 badgeTextSize;
-            using (plugin.PushClockTimeFont(profile.TimeTextFont))
+            using (PushPresetAuxFont(profile))
                 badgeTextSize = CalculateScaledTextSize(badgeText, badgeScale);
             var badgeSize = new Vector2(
                 badgeTextSize.X + (styleMetrics.BadgePaddingX * 2.0f),
@@ -3017,12 +3137,14 @@ public class MainWindow : Window, IDisposable
 
     private ClockLayoutMetrics GetClockLayoutMetrics(float scale, ClockParts parts)
     {
-        return GetClockLayoutMetrics(scale, parts, plugin.Configuration.GetActiveProfile().LayoutMode, ColonText, MinuteDigitGap, 0.0f);
+        var profile = plugin.Configuration.GetActiveProfile();
+        return GetClockLayoutMetrics(scale, parts, profile.LayoutMode, ColonText, MinuteDigitGap, GetMainColonSideTighten(profile));
     }
 
     private ClockLayoutMetrics GetClockLayoutMetrics(float scale, ClockParts parts, ClockLayoutMode layoutMode)
     {
-        return GetClockLayoutMetrics(scale, parts, layoutMode, ColonText, MinuteDigitGap, 0.0f);
+        var profile = plugin.Configuration.GetActiveProfile();
+        return GetClockLayoutMetrics(scale, parts, layoutMode, ColonText, MinuteDigitGap, GetMainColonSideTighten(profile));
     }
 
     private ClockLayoutMetrics GetClockLayoutMetrics(float scale, ClockParts parts, ClockLayoutMode layoutMode, string colonText, float minuteDigitGap, float colonSideTighten)
@@ -3038,9 +3160,7 @@ public class MainWindow : Window, IDisposable
         var activeProfile = plugin.Configuration.GetActiveProfile();
         var prefixText = string.IsNullOrWhiteSpace(parts.Prefix) ? string.Empty : parts.Prefix + " ";
         var suffixText = string.IsNullOrWhiteSpace(parts.Suffix) ? string.Empty : " " + parts.Suffix;
-        Vector2 prefixSize;
-        using (plugin.PushClockTimeFont(activeProfile.TimeTextFont != ClockTimeTextFont.Default ? activeProfile.TimeTextFont : ClockTimeTextFont.Default))
-            prefixSize = CalculateScaledTextSize(prefixText, scale);
+        var prefixSize = CalculateClockTextSize(prefixText, scale);
         var suffixSize = CalculateSuffixTextSize(activeProfile, suffixText, scale);
 
         if (layoutMode == ClockLayoutMode.Vertical)
@@ -3052,9 +3172,7 @@ public class MainWindow : Window, IDisposable
 
             if (!string.IsNullOrWhiteSpace(parts.Prefix))
             {
-                Vector2 prefixVerticalSize;
-                using (plugin.PushClockTimeFont(activeProfile.TimeTextFont != ClockTimeTextFont.Default ? activeProfile.TimeTextFont : ClockTimeTextFont.Default))
-                    prefixVerticalSize = CalculateScaledTextSize(parts.Prefix, scale);
+                var prefixVerticalSize = CalculateClockTextSize(parts.Prefix, scale);
                 maxWidth = MathF.Max(maxWidth, prefixVerticalSize.X);
                 verticalTotalHeight += prefixVerticalSize.Y + MathF.Max(2f, 2f * scale);
             }
@@ -3236,7 +3354,7 @@ public class MainWindow : Window, IDisposable
                 BadgeGap = -2f,
                 MainRounding = 10f,
                 BadgeRounding = 4f,
-                BadgeVerticalOffset = 3f,
+                BadgeVerticalOffset = 2f,
                 BorderThickness = 1.4f,
                 OutlineOffset = 1.05f,
                 BadgeScaleMultiplier = 0.72f,
